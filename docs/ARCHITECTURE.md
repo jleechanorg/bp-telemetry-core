@@ -27,7 +27,7 @@ Blueplane Telemetry Core is a **privacy-first, local-only telemetry system** for
 ### Design Principles
 
 1. **Privacy-First**: No code content, no cloud transmission, all local storage
-2. **Zero-Latency Ingestion**: Fast path writes with <1ms P95 latency
+2. **Low-Latency Ingestion**: Fast path writes with <10ms P95 latency (compressed batches)
 3. **Eventual Consistency**: Async enrichment doesn't block capture
 4. **Multi-Platform**: Supports Claude Code, Cursor, and extensible to others
 5. **Developer-Friendly**: Rich CLI, MCP integration, and web dashboard
@@ -435,7 +435,7 @@ CREATE INDEX idx_raw_date_hour ON raw_traces(event_date, event_hour);
 - zlib compression level 6 (7-10x compression ratio)
 - WAL mode for concurrent read/write
 - Same database file as conversations (table isolation)
-- Auto-archival to Parquet after 7 days
+- Auto-archival to Parquet after 90 days (configurable retention)
 - Performance: <10ms P95 for 100-event batch insert
 
 ### SQLite: Conversation Storage (Layer 2 & Layer 3)
