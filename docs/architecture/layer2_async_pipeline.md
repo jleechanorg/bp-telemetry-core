@@ -308,7 +308,7 @@ class MetricsWorker:
            - 'session_start': Count active sessions in last 60 minutes
         4. Write all metrics to redis_metrics.record_metric()
 
-        Note: SQLite queries may be slower than DuckDB (50-100ms vs 10ms for analytics)
+        Note: SQLite queries on raw_traces require decompression (10-40ms for session queries)
         but this is acceptable in async slow path with eventual consistency.
 
         See layer2_metrics_derivation.md for detailed metric calculations
@@ -446,8 +446,8 @@ backpressure:
 
 | Failure | Impact | Recovery |
 |---------|--------|----------|
-| MQ consumer crash | Events accumulate in inbox | Restart consumer, process backlog |
-| DuckDB write failure | Events lost (critical!) | Write-ahead log, retry with exponential backoff |
+| MQ consumer crash | Events accumulate in Redis Stream | Restart consumer, process backlog via PEL |
+| SQLite write failure | Events lost (critical!) | WAL mode with automatic recovery, retry with exponential backoff |
 | CDC publish failure | No metrics updates | Non-critical, log and continue |
 
 #### Slow Path Failures
@@ -455,7 +455,7 @@ backpressure:
 | Failure | Impact | Recovery |
 |---------|--------|----------|
 | Metrics worker crash | Metrics lag increases | Restart worker, process from last checkpoint |
-| SQLite corruption | No conversation updates | Rebuild from DuckDB raw traces |
+| SQLite corruption | No conversation updates | Rebuild from SQLite raw_traces table |
 | Redis down | No real-time metrics | Cache locally, bulk update when recovered |
 
 ### Recovery Procedures
@@ -470,8 +470,8 @@ class ConversationRebuilder:
         """
         Rebuild single session from raw traces.
 
-        - Get all events for session from DuckDB (ordered by timestamp)
-        - Delete existing conversation data from SQLite
+        - Get all events for session from SQLite raw_traces table (ordered by timestamp, decompress event_data)
+        - Delete existing conversation data from SQLite conversations table
         - Replay events in order through ConversationWorker
         - Log completion
         """
@@ -494,7 +494,7 @@ class PipelineMetrics:
         Categories:
         - fast_path: events/sec, batch_write_latency, cdc_publish_latency, queue_depth, dlq_depth
         - slow_path: cdc_queue_depth, processing_lag_ms, events_processed/failed, worker_utilization
-        - storage: duckdb_size_mb, sqlite_size_mb, redis_memory_mb, parquet_archives_count
+        - storage: sqlite_db_size_mb, sqlite_wal_size_mb, redis_memory_mb, parquet_archives_count
         - health: fast_path_healthy, slow_path_healthy, backpressure_level, data_consistency
         """
 ```
@@ -523,8 +523,8 @@ alerts:
     severity: warning
     action: slack
 
-  - name: DuckDBWriteFailures
-    condition: rate(duckdb_write_errors) > 0
+  - name: SQLiteWriteFailures
+    condition: rate(sqlite_write_errors) > 0
     duration: 1m
     severity: critical
     action: page
@@ -534,7 +534,7 @@ alerts:
 
 This async pipeline architecture achieves:
 
-1. ✅ **Zero-blocking raw ingestion** (<1ms P95)
+1. ✅ **Low-latency raw ingestion** (<10ms P95 with compression)
 2. ✅ **Eventual consistency** for derived data (<5s typical)
 3. ✅ **Graceful degradation** under load
 4. ✅ **Failure isolation** between fast and slow paths
