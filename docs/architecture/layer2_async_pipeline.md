@@ -43,20 +43,20 @@ graph TB
         DBMON[DB Monitor]
     end
 
-    subgraph "Message Queue"
-        INBOX[Inbox Directory]
-        DLQ[Dead Letter Queue]
+    subgraph "Message Queue (Redis Streams)"
+        MQSTREAM[telemetry:events<br/>Stream]
+        DLQ[telemetry:dlq<br/>Dead Letter Queue]
     end
 
     subgraph "Fast Path (Non-blocking)"
-        CONSUMER[MQ Consumer<br/>Single Thread]
-        WRITER[DuckDB Writer<br/>Batch Inserts]
+        CONSUMER[MQ Consumer<br/>XREADGROUP]
+        WRITER[SQLite Writer<br/>Batch + Compress]
         CDC[CDC Publisher]
     end
 
-    subgraph "Internal Queue"
-        STREAM[Redis Streams<br/>Work Queue]
-        PRIORITY[Priority Queues<br/>1-5 Levels]
+    subgraph "CDC Queue (Redis Streams)"
+        CDCSTREAM[cdc:events<br/>Work Queue]
+        PRIORITY[Consumer Groups<br/>by Worker Type]
     end
 
     subgraph "Slow Path (Async Workers)"
@@ -65,34 +65,34 @@ graph TB
         AW[AI Workers<br/>1-2 threads]
     end
 
-    subgraph "Storage"
-        DUCK[(DuckDB<br/>Raw Traces)]
-        SQLITE[(SQLite<br/>Conversations)]
-        REDIS[(Redis<br/>Metrics)]
+    subgraph "Storage (Single SQLite DB)"
+        SQRAW[(SQLite raw_traces<br/>Compressed)]
+        SQCONV[(SQLite conversations<br/>Same DB)]
+        REDIS[(Redis<br/>Metrics + TimeSeries)]
     end
 
-    HOOKS --> INBOX
-    DBMON --> INBOX
+    HOOKS --> MQSTREAM
+    DBMON --> MQSTREAM
 
-    INBOX --> CONSUMER
+    MQSTREAM --> CONSUMER
     CONSUMER --> WRITER
-    WRITER --> DUCK
+    WRITER --> SQRAW
     WRITER --> CDC
-    CDC --> STREAM
+    CDC --> CDCSTREAM
 
-    STREAM --> MW
-    STREAM --> CW
-    STREAM --> AW
+    CDCSTREAM --> MW
+    CDCSTREAM --> CW
+    CDCSTREAM --> AW
 
     MW --> REDIS
-    CW --> SQLITE
-    AW --> SQLITE
+    CW --> SQCONV
+    AW --> SQCONV
 
-    MW -.->|Read| DUCK
-    CW -.->|Read| DUCK
-    CW -.->|Read| SQLITE
-    AW -.->|Read| DUCK
-    AW -.->|Read| SQLITE
+    MW -.->|Read| SQRAW
+    CW -.->|Read| SQRAW
+    CW -.->|Read| SQCONV
+    AW -.->|Read| SQRAW
+    AW -.->|Read| SQCONV
     AW -.->|Read| REDIS
 
     style CONSUMER fill:#90EE90
@@ -101,6 +101,7 @@ graph TB
     style MW fill:#87CEEB
     style CW fill:#87CEEB
     style AW fill:#87CEEB
+    style MQSTREAM fill:#FFD700
 ```
 
 ## Fast Path Implementation
@@ -113,36 +114,43 @@ graph TB
 class FastPathConsumer:
     """
     High-throughput consumer that writes raw events with zero blocking.
-    Target: <1ms per event at P95.
+    Target: <10ms per batch at P95.
     """
 
     batch_size = 100
     batch_timeout = 0.1  # 100ms
+    stream_name = 'telemetry:events'
+    consumer_group = 'processors'
+    consumer_name = 'fast-path-1'
 
     async def run():
         """
-        Main consumer loop - never blocks on I/O.
+        Main consumer loop using Redis Streams XREADGROUP.
 
         While True:
-        - Poll inbox for new messages (limit 1000, non-blocking)
+        - Read from Redis Streams (blocking 1 second if no messages)
+        - Use XREADGROUP for consumer group pattern
         - For each message:
-          - Read and parse JSON
-          - Add _sequence (atomic increment) and _ingested_at
+          - Parse event data from stream entry
+          - Add _sequence (auto-increment via SQLite) and _ingested_at
           - Append to batch
-          - Delete message file immediately
+          - Track message ID for later XACK
           - Flush if batch_size reached
         - Time-based flush if batch_timeout exceeded
-        - Sleep 1ms to prevent CPU spinning
+        - On successful flush: XACK all processed message IDs
+        - On error: Don't XACK (messages will retry via PEL)
         """
 
     async def flush_batch():
         """
-        Write batch to DuckDB and publish CDC events.
+        Write batch to SQLite (compressed) and publish CDC events.
 
-        - writer.write_batch(batch)  # DuckDB insert, very fast
-        - For each event: cdc.publish(...)  # Fire-and-forget
-        - Clear batch
-        - On error: Log but continue (DuckDB already durable)
+        - writer.write_batch(batch)  # SQLite insert with zlib compression
+        - For each event: cdc.publish(...)  # Fire-and-forget to CDC stream
+        - XACK all message IDs in batch (mark as processed)
+        - Clear batch and message_ids list
+        - On error: Log but don't XACK (automatic retry via PEL)
+        - Handle DLQ: if retry_count >= 3, XADD to telemetry:dlq and XACK
         """
 
     def calculate_priority(event: Dict) -> int:
@@ -158,27 +166,43 @@ class FastPathConsumer:
         """
 ```
 
-### Batch Writer for DuckDB
+### Batch Writer for SQLite
 
 ```python
-# server/fast_path/duckdb_writer.py (pseudocode)
+# server/fast_path/sqlite_writer.py (pseudocode)
 
-class DuckDBBatchWriter:
+class SQLiteBatchWriter:
     """
-    Optimized batch writer for DuckDB with zero reads.
-    Uses prepared statements and columnar insert for speed.
+    Optimized batch writer for SQLite with zlib compression and zero reads.
+    Uses WAL mode and prepared statements for speed.
     """
+
+    db_path = '~/.blueplane/telemetry.db'
+
+    def __init__():
+        """
+        Initialize SQLite connection with performance settings.
+
+        - Enable WAL mode: PRAGMA journal_mode=WAL
+        - Set synchronous=NORMAL for speed
+        - Set cache_size=-64000 (64MB cache)
+        - Prepare INSERT statement for raw_traces table
+        """
 
     async def write_batch(events: List[Dict]) -> None:
         """
-        Write batch of events to DuckDB - no reads, no lookups, pure writes.
+        Write batch of events to SQLite - no reads, no lookups, pure writes.
 
-        - Prepare columnar data from events list
+        - For each event:
+          - Compress full event dict with zlib (level 6)
+          - Extract indexed fields (session_id, event_type, etc.)
+          - Build row tuple with compressed event_data BLOB
         - Single executemany() with INSERT statement
-        - Auto-commit mode (no explicit commit needed)
-        - Target: <2ms for 100 events at P95
+        - Commit transaction
+        - Target: <8ms for 100 events at P95
 
-        Schema: See database_architecture_detailed.md
+        Schema: See layer2_db_architecture.md (raw_traces table)
+        Compression: zlib level 6 provides 7-10x compression ratio
         """
 ```
 
@@ -276,13 +300,16 @@ class MetricsWorker:
         """
         Process single CDC event to calculate metrics.
 
-        1. Read full event from duckdb.get_by_sequence(sequence)
-        2. Get recent session stats from duckdb.get_session_stats(session_id, window=5min)
+        1. Read full event from sqlite.get_by_sequence(sequence) and decompress
+        2. Get recent session stats from sqlite.get_session_stats(session_id, window=5min)
         3. Calculate metrics based on event_type:
            - 'tool_use': Calculate latency percentiles (p50, p95, p99)
            - 'acceptance_decision': Calculate acceptance rate (sliding window of 100)
            - 'session_start': Count active sessions in last 60 minutes
         4. Write all metrics to redis_metrics.record_metric()
+
+        Note: SQLite queries may be slower than DuckDB (50-100ms vs 10ms for analytics)
+        but this is acceptable in async slow path with eventual consistency.
 
         See layer2_metrics_derivation.md for detailed metric calculations
         """
@@ -303,14 +330,19 @@ class ConversationWorker:
         """
         Process event to update conversation structure.
 
-        1. Read full event from duckdb.get_by_sequence(sequence)
-        2. Get or create conversation in SQLite
+        1. Read full event from sqlite.get_by_sequence(sequence) and decompress
+        2. Get or create conversation in SQLite (same database, conversations table)
         3. Update based on event_type:
            - 'user_prompt': Add turn with content_hash
            - 'assistant_response': Add turn with tokens and latency
            - 'tool_use': Update tool_sequence and add turn
            - 'code_change': Add code change with acceptance tracking
         4. Update conversation metrics (acceptance rate, total changes)
+
+        Benefits of single SQLite database:
+        - Can use transactions across raw_traces and conversations tables
+        - No cross-database joins needed
+        - Simpler connection management
 
         For platform-specific reconstruction:
         - See layer2_conversation_reconstruction.md#cursor-platform-reconstruction
@@ -325,14 +357,17 @@ class ConversationWorker:
 | Component | Operation | Target P50 | Target P95 | Target P99 |
 |-----------|----------|------------|------------|------------|
 | **Fast Path** | | | | |
-| MQ Read | Read message file | 0.1ms | 0.5ms | 1ms |
+| MQ Read | Redis XREADGROUP | 0.5ms | 1ms | 2ms |
 | Parse | JSON decode | 0.1ms | 0.2ms | 0.5ms |
-| Batch Write | DuckDB insert (100 events) | 2ms | 5ms | 10ms |
+| Compress | zlib level 6 (100 events) | 2ms | 3ms | 5ms |
+| Batch Write | SQLite insert (100 events, compressed) | 5ms | 8ms | 15ms |
 | CDC Publish | Redis XADD | 0.5ms | 1ms | 2ms |
-| **Total Fast Path** | End-to-end | **0.5ms** | **1ms** | **2ms** |
+| XACK | Acknowledge messages | 0.5ms | 1ms | 2ms |
+| **Total Fast Path** | End-to-end per batch | **5ms** | **10ms** | **20ms** |
 | | | | | |
 | **Slow Path** | | | | |
-| Metrics Calculation | Per event | 5ms | 20ms | 50ms |
+| Decompress | zlib decompress per event | 0.1ms | 0.2ms | 0.5ms |
+| Metrics Calculation | Per event | 10ms | 50ms | 100ms |
 | Conversation Update | Per event | 10ms | 50ms | 100ms |
 | AI Insights | Per event | 100ms | 500ms | 1000ms |
 | **Total Lag** | From ingest to metrics | **<1s** | **<5s** | **<10s** |
@@ -342,10 +377,11 @@ class ConversationWorker:
 | Metric | Target | Notes |
 |--------|--------|-------|
 | Fast path events/sec | 10,000 | Single consumer |
-| DuckDB writes/sec | 100,000 | Batched inserts |
-| CDC publishes/sec | 10,000 | Redis Streams |
-| Metrics updates/sec | 1,000 | 2 workers |
-| Conversation updates/sec | 500 | 2 workers |
+| SQLite writes/sec | 10,000 | Batched inserts with WAL mode |
+| Redis Streams writes/sec | 100,000 | Message queue + CDC |
+| CDC publishes/sec | 10,000 | Change data capture |
+| Metrics updates/sec | 1,000 | 2-4 workers |
+| Conversation updates/sec | 500 | 2-4 workers |
 
 ## Backpressure Management
 
