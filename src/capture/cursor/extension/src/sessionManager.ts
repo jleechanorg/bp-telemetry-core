@@ -99,18 +99,19 @@ export class SessionManager {
    * persist to child processes. Hooks will need to read from extension
    * storage or use alternative communication method.
    *
-   * For now, we store in workspace state and hooks can query via IPC.
+   * We write to a well-known file location that hooks can read.
    */
   private setEnvironmentVariables(sessionId: string, workspaceHash: string): void {
     // Store in workspace state for hooks to access
     this.context.workspaceState.update('CURSOR_SESSION_ID', sessionId);
     this.context.workspaceState.update('CURSOR_WORKSPACE_HASH', workspaceHash);
 
-    // Alternative: Write to file that hooks can read
-    const envFile = vscode.Uri.joinPath(
-      this.context.globalStorageUri,
-      '.cursor-session-env'
-    );
+    // Write to home directory file that hooks can reliably read
+    const os = require('os');
+    const fs = require('fs');
+    const path = require('path');
+
+    const envFilePath = path.join(os.homedir(), '.cursor-session-env');
 
     const envData = {
       CURSOR_SESSION_ID: sessionId,
@@ -118,12 +119,12 @@ export class SessionManager {
       updated_at: new Date().toISOString(),
     };
 
-    vscode.workspace.fs.writeFile(
-      envFile,
-      Buffer.from(JSON.stringify(envData, null, 2))
-    ).then(() => {
-      console.log('Session environment written to file');
-    });
+    try {
+      fs.writeFileSync(envFilePath, JSON.stringify(envData, null, 2));
+      console.log(`Session environment written to ${envFilePath}`);
+    } catch (error) {
+      console.error('Failed to write session environment file:', error);
+    }
   }
 
   /**

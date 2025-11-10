@@ -61,25 +61,40 @@ class Config:
 
         Args:
             config_dir: Path to configuration directory.
-                       Defaults to project_root/config
+                       Defaults to checking multiple locations
         """
         if config_dir is None:
-            # Find project root (where config/ directory is)
+            # Try multiple locations for config directory
+            possible_locations = [
+                # 1. User's home directory (where installer puts it)
+                Path.home() / ".blueplane",
+                # 2. Relative to current file (development/source)
+                Path(__file__).parent.parent.parent.parent / "config",
+                # 3. System-wide config
+                Path("/etc/blueplane"),
+            ]
+
+            # Also walk up from current file looking for config/
             current = Path(__file__).parent
             while current != current.parent:
                 config_candidate = current / "config"
                 if config_candidate.exists():
-                    config_dir = config_candidate
-                    break
-                # Also check parent directories
-                parent_config = current.parent.parent.parent / "config"
-                if parent_config.exists():
-                    config_dir = parent_config
+                    possible_locations.insert(0, config_candidate)
                     break
                 current = current.parent
 
+            # Find first existing location
+            for location in possible_locations:
+                if location.exists() and location.is_dir():
+                    # Check if it has any YAML files
+                    if list(location.glob("*.yaml")) or list(location.glob("*.yml")):
+                        config_dir = location
+                        break
+
             if config_dir is None:
-                raise FileNotFoundError("Could not find config directory")
+                # Use default location even if it doesn't exist
+                # (will use default values)
+                config_dir = Path.home() / ".blueplane"
 
         self.config_dir = Path(config_dir)
         self._redis_config: Optional[Dict[str, Any]] = None

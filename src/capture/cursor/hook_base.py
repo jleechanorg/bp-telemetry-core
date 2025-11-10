@@ -21,6 +21,37 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.queue_writer import MessageQueueWriter
 from shared.event_schema import Platform, HookType, EventType
+from shared.privacy import PrivacySanitizer
+from shared.config import Config
+
+
+def str_to_bool(value: str) -> bool:
+    """
+    Convert string to boolean properly.
+
+    Args:
+        value: String value ("true", "false", "1", "0", etc.)
+
+    Returns:
+        Boolean value
+
+    Note:
+        This is needed because argparse type=bool doesn't work correctly.
+        It treats any non-empty string as True.
+    """
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, str):
+        lower_value = value.lower().strip()
+        if lower_value in ('true', '1', 'yes', 'on'):
+            return True
+        elif lower_value in ('false', '0', 'no', 'off', ''):
+            return False
+        else:
+            raise ValueError(f"Cannot convert '{value}' to boolean")
+
+    raise ValueError(f"Expected string or bool, got {type(value)}")
 
 
 class CursorHookBase:
@@ -32,6 +63,7 @@ class CursorHookBase:
     - Session ID retrieval
     - Event building
     - Message queue integration
+    - Privacy sanitization
     - Silent failure mode
     """
 
@@ -46,32 +78,102 @@ class CursorHookBase:
         self.session_id = self._get_session_id()
         self.workspace_root = None
         self.queue_writer = None
+        self.sanitizer = None
 
-        # Only initialize queue writer if we have a session
+        # Only initialize queue writer and sanitizer if we have a session
         if self.session_id:
             try:
                 self.queue_writer = MessageQueueWriter()
+                # Initialize privacy sanitizer with config
+                config = Config()
+                privacy_config = config.privacy
+                self.sanitizer = PrivacySanitizer({
+                    'opt_out': privacy_config.opt_out
+                })
             except Exception:
                 # Silent failure - don't block IDE
                 pass
 
     def _get_session_id(self) -> Optional[str]:
         """
-        Get session ID from environment variable.
+        Get session ID from environment variable or extension file.
+
+        Tries multiple sources in order:
+        1. CURSOR_SESSION_ID environment variable
+        2. Extension storage file (~/.cursor-session-env)
+        3. VSCode global storage (platform-specific paths)
 
         Returns:
             Session ID or None if not set
         """
-        return os.environ.get('CURSOR_SESSION_ID')
+        # First try environment variable (if extension can set it)
+        session_id = os.environ.get('CURSOR_SESSION_ID')
+        if session_id:
+            return session_id
+
+        # Try reading from extension-written file
+        import json
+        from pathlib import Path
+
+        # Try common locations for the session file
+        possible_paths = [
+            Path.home() / '.cursor-session-env',
+            Path.home() / '.vscode' / '.cursor-session-env',
+            Path.home() / 'Library' / 'Application Support' / 'Cursor' / '.cursor-session-env',
+            Path.home() / '.config' / 'Cursor' / '.cursor-session-env',
+            Path.home() / 'AppData' / 'Roaming' / 'Cursor' / '.cursor-session-env',
+        ]
+
+        for path in possible_paths:
+            if path.exists():
+                try:
+                    with open(path, 'r') as f:
+                        data = json.load(f)
+                        session_id = data.get('CURSOR_SESSION_ID')
+                        if session_id:
+                            return session_id
+                except Exception:
+                    # Silent failure - continue to next path
+                    continue
+
+        return None
 
     def _get_workspace_hash(self) -> Optional[str]:
         """
-        Get workspace hash from environment variable.
+        Get workspace hash from environment variable or extension file.
 
         Returns:
             Workspace hash or None if not set
         """
-        return os.environ.get('CURSOR_WORKSPACE_HASH')
+        # First try environment variable
+        workspace_hash = os.environ.get('CURSOR_WORKSPACE_HASH')
+        if workspace_hash:
+            return workspace_hash
+
+        # Try reading from extension file (same as session ID)
+        import json
+        from pathlib import Path
+
+        possible_paths = [
+            Path.home() / '.cursor-session-env',
+            Path.home() / '.vscode' / '.cursor-session-env',
+            Path.home() / 'Library' / 'Application Support' / 'Cursor' / '.cursor-session-env',
+            Path.home() / '.config' / 'Cursor' / '.cursor-session-env',
+            Path.home() / 'AppData' / 'Roaming' / 'Cursor' / '.cursor-session-env',
+        ]
+
+        for path in possible_paths:
+            if path.exists():
+                try:
+                    with open(path, 'r') as f:
+                        data = json.load(f)
+                        workspace_hash = data.get('CURSOR_WORKSPACE_HASH')
+                        if workspace_hash:
+                            return workspace_hash
+                except Exception:
+                    continue
+
+        return None
 
     def parse_args(self, args_spec: Dict[str, Dict[str, Any]]) -> argparse.Namespace:
         """
@@ -118,7 +220,13 @@ class CursorHookBase:
         Returns:
             Event dictionary
         """
+        # Import version from package
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from capture import __version__
+
         event = {
+            'version': __version__,
             'hook_type': self.hook_type.value,
             'event_type': event_type.value,
             'timestamp': datetime.now(timezone.utc).isoformat(),
@@ -135,7 +243,7 @@ class CursorHookBase:
 
     def enqueue_event(self, event: Dict[str, Any]) -> bool:
         """
-        Enqueue event to message queue.
+        Enqueue event to message queue after privacy sanitization.
 
         Args:
             event: Event dictionary
@@ -152,8 +260,13 @@ class CursorHookBase:
             return False
 
         try:
+            # Sanitize event before enqueueing
+            sanitized_event = event
+            if self.sanitizer:
+                sanitized_event = self.sanitizer.sanitize_event(event)
+
             return self.queue_writer.enqueue(
-                event=event,
+                event=sanitized_event,
                 platform=Platform.CURSOR.value,
                 session_id=self.session_id
             )

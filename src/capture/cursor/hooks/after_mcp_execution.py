@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hook_base import CursorHookBase
+from hook_base import CursorHookBase, str_to_bool
 from shared.event_schema import HookType, EventType
 
 
@@ -28,15 +28,18 @@ class AfterMCPExecutionHook(CursorHookBase):
         """Execute hook logic."""
         args = self.parse_args({
             'tool_name': {'type': str, 'help': 'MCP tool name'},
-            'success': {'type': bool, 'help': 'Whether execution succeeded'},
+            'success': {'type': str, 'help': 'Whether execution succeeded (true/false)'},
             'duration_ms': {'type': int, 'help': 'Execution duration in milliseconds'},
             'output_size': {'type': int, 'help': 'Output size in bytes', 'default': 0},
             'error_message': {'type': str, 'help': 'Error message if failed', 'default': None},
         })
 
+        # Properly convert success string to boolean
+        success = str_to_bool(args.success) if args.success else False
+
         payload = {
             'tool_name': args.tool_name,
-            'success': args.success,
+            'success': success,
             'duration_ms': args.duration_ms,
             'output_size': args.output_size,
         }
