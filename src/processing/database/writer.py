@@ -11,6 +11,7 @@ Target: <8ms P95 latency for 100 events.
 
 import json
 import zlib
+import asyncio
 import logging
 from typing import Dict, List, Any, Optional
 from datetime import datetime
@@ -94,12 +95,11 @@ class SQLiteBatchWriter:
             'lines_removed': payload.get('lines_removed') or metadata.get('lines_removed'),
         }
 
-    async def write_batch(self, events: List[Dict[str, Any]]) -> List[int]:
+    def write_batch_sync(self, events: List[Dict[str, Any]]) -> List[int]:
         """
-        Write batch of events to SQLite with compression.
-
-        This is the fast path - zero reads, pure writes.
-        Target: <8ms P95 for 100 events.
+        Synchronous batch write (called from thread pool).
+        
+        This is the actual implementation that runs in a thread.
 
         Args:
             events: List of event dictionaries
@@ -157,6 +157,25 @@ class SQLiteBatchWriter:
         except Exception as e:
             logger.error(f"Failed to write batch: {e}")
             raise
+
+    async def write_batch(self, events: List[Dict[str, Any]]) -> List[int]:
+        """
+        Write batch of events to SQLite with compression (async wrapper).
+
+        This is the fast path - zero reads, pure writes.
+        Uses asyncio.to_thread() to run synchronous SQLite operations
+        without blocking the event loop.
+        Target: <8ms P95 for 100 events.
+
+        Args:
+            events: List of event dictionaries
+
+        Returns:
+            List of sequence numbers for written events
+        """
+        # Run synchronous SQLite operations in thread pool
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.write_batch_sync, events)
 
     def get_by_sequence(self, sequence: int) -> Optional[Dict[str, Any]]:
         """
