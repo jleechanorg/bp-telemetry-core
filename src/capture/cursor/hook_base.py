@@ -1,68 +1,50 @@
+#!/usr/bin/env python3
 # Copyright © 2025 Sierra Labs LLC
 # SPDX-License-Identifier: AGPL-3.0-only
 # License-Filename: LICENSE
 
 """
-Base utilities for Cursor hooks.
+Base class for Cursor hooks using stdin/stdout JSON communication.
 
-Provides common functionality for all Cursor hook scripts.
+Cursor hooks communicate via stdio:
+- Input: JSON on stdin
+- Output: JSON on stdout (for hooks that need responses)
+- Errors: Log to stderr (never block)
 """
 
+import json
 import os
 import sys
-import argparse
+import hashlib
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
 from pathlib import Path
+from typing import Dict, Any, Optional
 
-
-# Add parent directory to path for imports
+# Add shared modules to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.queue_writer import MessageQueueWriter
-from shared.event_schema import Platform, HookType, EventType
-from shared.privacy import PrivacySanitizer
+from shared.event_schema import EventType, HookType
 from shared.config import Config
-
-
-def str_to_bool(value: str) -> bool:
-    """
-    Convert string to boolean properly.
-
-    Args:
-        value: String value ("true", "false", "1", "0", etc.)
-
-    Returns:
-        Boolean value
-
-    Note:
-        This is needed because argparse type=bool doesn't work correctly.
-        It treats any non-empty string as True.
-    """
-    if isinstance(value, bool):
-        return value
-
-    if isinstance(value, str):
-        lower_value = value.lower().strip()
-        if lower_value in ('true', '1', 'yes', 'on'):
-            return True
-        elif lower_value in ('false', '0', 'no', 'off', ''):
-            return False
-        else:
-            raise ValueError(f"Cannot convert '{value}' to boolean")
-
-    raise ValueError(f"Expected string or bool, got {type(value)}")
+from shared.privacy import PrivacySanitizer
 
 
 class CursorHookBase:
     """
-    Base class for Cursor hooks.
+    Base class for Cursor hooks using stdin/stdout JSON communication.
 
-    Provides common functionality:
-    - Environment variable reading
-    - Session ID retrieval
-    - Event building
-    - Message queue integration
+    All Cursor hooks receive JSON input via stdin with this common schema:
+    {
+      "conversation_id": "string",
+      "generation_id": "string",
+      "hook_event_name": "string",
+      "workspace_roots": ["<path>"]
+    }
+
+    Provides:
+    - JSON stdin reading
+    - Session ID retrieval from workspace-specific files
+    - Event building and queueing to Redis
     - Privacy sanitization
     - Silent failure mode
     """
@@ -75,16 +57,30 @@ class CursorHookBase:
             hook_type: Type of hook being executed
         """
         self.hook_type = hook_type
-        self.session_id = self._get_session_id()
-        self.workspace_root = None
-        self.queue_writer = None
-        self.sanitizer = None
+        self.input_data: Dict[str, Any] = {}
+        self.session_id: Optional[str] = None
+        self.workspace_root: Optional[str] = None
+        self.queue_writer: Optional[MessageQueueWriter] = None
+        self.sanitizer: Optional[PrivacySanitizer] = None
 
-        # Only initialize queue writer and sanitizer if we have a session
+        # Read input from stdin
+        self._read_input()
+
+        # Extract common fields
+        self.conversation_id = self.input_data.get('conversation_id')
+        self.generation_id = self.input_data.get('generation_id')
+        self.hook_event_name = self.input_data.get('hook_event_name')
+        workspace_roots = self.input_data.get('workspace_roots', [])
+        if workspace_roots:
+            self.workspace_root = workspace_roots[0]
+
+        # Get session ID from workspace-specific file
+        self.session_id = self._get_session_id()
+
+        # Initialize queue writer and sanitizer only if we have a session
         if self.session_id:
             try:
                 self.queue_writer = MessageQueueWriter()
-                # Initialize privacy sanitizer with config
                 config = Config()
                 privacy_config = config.privacy
                 self.sanitizer = PrivacySanitizer({
@@ -94,11 +90,20 @@ class CursorHookBase:
                 # Silent failure - don't block IDE
                 pass
 
+    def _read_input(self) -> None:
+        """Read JSON input from stdin."""
+        try:
+            self.input_data = json.load(sys.stdin)
+        except Exception as e:
+            # Log to stderr (not stdout which is reserved for hook output)
+            print(f"Error reading stdin: {e}", file=sys.stderr)
+            self.input_data = {}
+
     def _get_workspace_path(self) -> str:
         """
         Get workspace path.
 
-        Uses workspace_root if provided by Cursor, otherwise falls back to cwd.
+        Uses workspace_root from input if available, otherwise falls back to cwd.
 
         Returns:
             Workspace path
@@ -107,32 +112,26 @@ class CursorHookBase:
 
     def _get_session_id(self) -> Optional[str]:
         """
-        Get session ID from environment variable or extension file.
+        Get session ID from workspace-specific session file.
 
-        Tries multiple sources in order:
+        Tries in order:
         1. CURSOR_SESSION_ID environment variable
         2. Workspace-specific session file (~/.blueplane/cursor-session/<hash>.json)
         3. Legacy global file (~/.cursor-session-env)
-        4. VSCode global storage (platform-specific paths)
 
         Returns:
             Session ID or None if not set
         """
-        # First try environment variable (if extension can set it)
+        # First try environment variable
         session_id = os.environ.get('CURSOR_SESSION_ID')
         if session_id:
             return session_id
 
-        # Try reading from extension-written file
-        import json
-        from pathlib import Path
-        import hashlib
-
-        # Try workspace-specific session file first
-        # Use workspace_root argument if available, otherwise fall back to cwd
+        # Compute workspace hash
         workspace_path = self._get_workspace_path()
         workspace_hash = hashlib.sha256(workspace_path.encode()).hexdigest()[:16]
 
+        # Try workspace-specific session file
         workspace_session_file = Path.home() / '.blueplane' / 'cursor-session' / f'{workspace_hash}.json'
         if workspace_session_file.exists():
             try:
@@ -142,122 +141,31 @@ class CursorHookBase:
                     if session_id:
                         return session_id
             except Exception:
-                # Silent failure - continue to fallback
                 pass
 
-        # Fall back to legacy global file and other locations
-        possible_paths = [
-            Path.home() / '.cursor-session-env',
-            Path.home() / '.vscode' / '.cursor-session-env',
-            Path.home() / 'Library' / 'Application Support' / 'Cursor' / '.cursor-session-env',
-            Path.home() / '.config' / 'Cursor' / '.cursor-session-env',
-            Path.home() / 'AppData' / 'Roaming' / 'Cursor' / '.cursor-session-env',
-        ]
-
-        for path in possible_paths:
-            if path.exists():
-                try:
-                    with open(path, 'r') as f:
-                        data = json.load(f)
-                        session_id = data.get('CURSOR_SESSION_ID')
-                        if session_id:
-                            return session_id
-                except Exception:
-                    # Silent failure - continue to next path
-                    continue
+        # Fall back to legacy global file
+        legacy_file = Path.home() / '.cursor-session-env'
+        if legacy_file.exists():
+            try:
+                with open(legacy_file, 'r') as f:
+                    data = json.load(f)
+                    session_id = data.get('CURSOR_SESSION_ID')
+                    if session_id:
+                        return session_id
+            except Exception:
+                pass
 
         return None
 
     def _get_workspace_hash(self) -> Optional[str]:
         """
-        Get workspace hash from environment variable or extension file.
+        Get workspace hash.
 
         Returns:
-            Workspace hash or None if not set
+            Workspace hash computed from workspace path
         """
-        # First try environment variable
-        workspace_hash = os.environ.get('CURSOR_WORKSPACE_HASH')
-        if workspace_hash:
-            return workspace_hash
-
-        # Try reading from extension file (same as session ID)
-        import json
-        from pathlib import Path
-        import hashlib
-
-        # Try workspace-specific session file first
-        # Use workspace_root argument if available, otherwise fall back to cwd
         workspace_path = self._get_workspace_path()
-        computed_hash = hashlib.sha256(workspace_path.encode()).hexdigest()[:16]
-
-        workspace_session_file = Path.home() / '.blueplane' / 'cursor-session' / f'{computed_hash}.json'
-        if workspace_session_file.exists():
-            try:
-                with open(workspace_session_file, 'r') as f:
-                    data = json.load(f)
-                    workspace_hash = data.get('CURSOR_WORKSPACE_HASH')
-                    if workspace_hash:
-                        return workspace_hash
-            except Exception:
-                pass
-
-        # Fall back to legacy global file and other locations
-        possible_paths = [
-            Path.home() / '.cursor-session-env',
-            Path.home() / '.vscode' / '.cursor-session-env',
-            Path.home() / 'Library' / 'Application Support' / 'Cursor' / '.cursor-session-env',
-            Path.home() / '.config' / 'Cursor' / '.cursor-session-env',
-            Path.home() / 'AppData' / 'Roaming' / 'Cursor' / '.cursor-session-env',
-        ]
-
-        for path in possible_paths:
-            if path.exists():
-                try:
-                    with open(path, 'r') as f:
-                        data = json.load(f)
-                        workspace_hash = data.get('CURSOR_WORKSPACE_HASH')
-                        if workspace_hash:
-                            return workspace_hash
-                except Exception:
-                    continue
-
-        return None
-
-    def parse_args(self, args_spec: Dict[str, Dict[str, Any]]) -> argparse.Namespace:
-        """
-        Parse command-line arguments.
-
-        Automatically saves workspace_root to self.workspace_root if present.
-
-        Args:
-            args_spec: Dictionary of argument specifications
-                      Format: {arg_name: {type: str, help: str, default: None}}
-
-        Returns:
-            Parsed arguments namespace
-        """
-        parser = argparse.ArgumentParser(description=f"Cursor {self.hook_type.value} hook")
-
-        for arg_name, spec in args_spec.items():
-            arg_type = spec.get('type', str)
-            arg_help = spec.get('help', '')
-            arg_default = spec.get('default')
-
-            parser.add_argument(
-                f'--{arg_name.replace("_", "-")}',
-                dest=arg_name,
-                type=arg_type,
-                help=arg_help,
-                default=arg_default
-            )
-
-        args = parser.parse_args()
-
-        # Save workspace_root for hash computation if provided
-        if hasattr(args, 'workspace_root') and args.workspace_root:
-            self.workspace_root = args.workspace_root
-
-        return args
+        return hashlib.sha256(workspace_path.encode()).hexdigest()[:16]
 
     def build_event(
         self,
@@ -277,7 +185,6 @@ class CursorHookBase:
             Event dictionary
         """
         # Import version from package
-        import sys
         sys.path.insert(0, str(Path(__file__).parent.parent))
         from capture import __version__
 
@@ -298,6 +205,10 @@ class CursorHookBase:
         if workspace_hash:
             event['metadata']['workspace_hash'] = workspace_hash
 
+        # Add generation ID if available
+        if self.generation_id:
+            event['metadata']['generation_id'] = self.generation_id
+
         return event
 
     def enqueue_event(self, event: Dict[str, Any]) -> bool:
@@ -305,52 +216,60 @@ class CursorHookBase:
         Enqueue event to message queue after privacy sanitization.
 
         Args:
-            event: Event dictionary
+            event: Event to enqueue
 
         Returns:
-            True on success, False on failure (silent)
+            True if successful, False otherwise
         """
         if not self.session_id:
-            # No session active - skip silently
             return False
 
         if not self.queue_writer:
-            # Queue writer not initialized - skip silently
             return False
 
         try:
-            # Sanitize event before enqueueing
-            sanitized_event = event
+            # Apply privacy sanitization
             if self.sanitizer:
-                sanitized_event = self.sanitizer.sanitize_event(event)
+                event = self.sanitizer.sanitize_event(event)
 
-            return self.queue_writer.enqueue(
-                event=sanitized_event,
-                platform=Platform.CURSOR.value,
-                session_id=self.session_id
-            )
+            # Write to Redis
+            success = self.queue_writer.enqueue(event, 'cursor', self.session_id)
+            return success
         except Exception:
-            # Silent failure - never block IDE
+            # Silent failure
             return False
+
+    def write_output(self, output: Dict[str, Any]) -> None:
+        """
+        Write JSON output to stdout.
+
+        Args:
+            output: Output dictionary to write
+        """
+        try:
+            print(json.dumps(output), flush=True)
+        except Exception as e:
+            print(f"Error writing output: {e}", file=sys.stderr)
 
     def execute(self) -> int:
         """
-        Execute hook (to be implemented by subclasses).
+        Execute hook logic. Override in subclasses.
 
         Returns:
-            Exit code (always 0 for hooks)
+            Exit code (always 0 for silent failure)
         """
         raise NotImplementedError("Subclasses must implement execute()")
 
     def run(self) -> int:
         """
-        Run hook with error handling.
+        Main entry point. Executes hook and handles errors.
 
         Returns:
-            Always returns 0 (success) - never fails
+            Exit code (always 0 for silent failure)
         """
         try:
             return self.execute()
-        except Exception:
-            # Silent failure - always return success
+        except Exception as e:
+            # Log to stderr but never fail
+            print(f"Hook error: {e}", file=sys.stderr)
             return 0

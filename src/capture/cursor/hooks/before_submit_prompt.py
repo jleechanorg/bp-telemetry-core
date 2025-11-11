@@ -4,9 +4,10 @@
 # License-Filename: LICENSE
 
 """
-Cursor Hook: beforeSubmitPrompt
+Cursor beforeSubmitPrompt Hook (stdin/stdout)
 
-Captures event when user submits a prompt to Cursor.
+Fires when user submits a prompt, before backend request.
+Receives JSON via stdin, outputs JSON via stdout.
 """
 
 import sys
@@ -16,48 +17,46 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hook_base import CursorHookBase
-from shared.event_schema import HookType, EventType
+from shared.event_schema import EventType, HookType
 
 
 class BeforeSubmitPromptHook(CursorHookBase):
-    """Hook for before user prompt submission."""
+    """Hook that fires before prompt submission."""
 
     def __init__(self):
         super().__init__(HookType.BEFORE_SUBMIT_PROMPT)
 
     def execute(self) -> int:
         """Execute hook logic."""
-        # Parse command-line arguments
-        args = self.parse_args({
-            'workspace_root': {'type': str, 'help': 'Workspace root path'},
-            'generation_id': {'type': str, 'help': 'Generation ID'},
-            'prompt_length': {'type': int, 'help': 'Prompt length in characters'},
-        })
+        # Extract prompt data from stdin
+        prompt = self.input_data.get('prompt', '')
+        attachments = self.input_data.get('attachments', [])
 
         # Build event payload
         payload = {
-            'generation_id': args.generation_id,
-            'prompt_length': args.prompt_length,
+            'prompt_length': len(prompt),
+            'attachment_count': len(attachments),
         }
+
+        # Add attachment types
+        if attachments:
+            attachment_types = [att.get('type') for att in attachments]
+            payload['attachment_types'] = attachment_types
 
         # Build and enqueue event
         event = self.build_event(
             event_type=EventType.USER_PROMPT,
-            payload=payload,
-            metadata={
-                'workspace_root_hash': self._get_workspace_hash(),
-            }
+            payload=payload
         )
 
         self.enqueue_event(event)
+
+        # Always allow prompt submission (continue: true)
+        self.write_output({"continue": True})
+
         return 0
 
 
-def main():
-    """Main entry point."""
+if __name__ == '__main__':
     hook = BeforeSubmitPromptHook()
     sys.exit(hook.run())
-
-
-if __name__ == '__main__':
-    main()

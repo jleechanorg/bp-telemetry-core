@@ -5,156 +5,48 @@
   "hooks": {
     "beforeSubmitPrompt": [
       {
-        "command": "python3",
-        "args": [
-          "~/.cursor/hooks/before_submit_prompt.py",
-          "--workspace-root",
-          "${workspaceRoot}",
-          "--generation-id",
-          "${generationId}",
-          "--prompt-length",
-          "${promptLength}"
-        ],
-        "enabled": true,
-        "timeout": 1000
+        "command": "./hooks/before_submit_prompt.py"
       }
     ],
     "afterAgentResponse": [
       {
-        "command": "python3",
-        "args": [
-          "~/.cursor/hooks/after_agent_response.py",
-          "--generation-id",
-          "${generationId}",
-          "--response-length",
-          "${responseLength}",
-          "--tokens-used",
-          "${tokensUsed}",
-          "--model",
-          "${model}",
-          "--duration-ms",
-          "${durationMs}"
-        ],
-        "enabled": true,
-        "timeout": 1000
+        "command": "./hooks/after_agent_response.py"
       }
     ],
     "beforeMCPExecution": [
       {
-        "command": "python3",
-        "args": [
-          "~/.cursor/hooks/before_mcp_execution.py",
-          "--tool-name",
-          "${toolName}",
-          "--input-size",
-          "${inputSize}",
-          "--generation-id",
-          "${generationId}"
-        ],
-        "enabled": true,
-        "timeout": 1000
+        "command": "./hooks/before_mcp_execution.py"
       }
     ],
     "afterMCPExecution": [
       {
-        "command": "python3",
-        "args": [
-          "~/.cursor/hooks/after_mcp_execution.py",
-          "--tool-name",
-          "${toolName}",
-          "--success",
-          "${success}",
-          "--duration-ms",
-          "${durationMs}",
-          "--output-size",
-          "${outputSize}",
-          "--error-message",
-          "${errorMessage}"
-        ],
-        "enabled": true,
-        "timeout": 1000
+        "command": "./hooks/after_mcp_execution.py"
       }
     ],
     "afterFileEdit": [
       {
-        "command": "python3",
-        "args": [
-          "~/.cursor/hooks/after_file_edit.py",
-          "--file-extension",
-          "${fileExtension}",
-          "--lines-added",
-          "${linesAdded}",
-          "--lines-removed",
-          "${linesRemoved}",
-          "--operation",
-          "${operation}",
-          "--generation-id",
-          "${generationId}"
-        ],
-        "enabled": true,
-        "timeout": 1000
+        "command": "./hooks/after_file_edit.py"
       }
     ],
     "beforeShellExecution": [
       {
-        "command": "python3",
-        "args": [
-          "~/.cursor/hooks/before_shell_execution.py",
-          "--command-length",
-          "${commandLength}",
-          "--generation-id",
-          "${generationId}"
-        ],
-        "enabled": true,
-        "timeout": 1000
+        "command": "./hooks/before_shell_execution.py"
       }
     ],
     "afterShellExecution": [
       {
-        "command": "python3",
-        "args": [
-          "~/.cursor/hooks/after_shell_execution.py",
-          "--exit-code",
-          "${exitCode}",
-          "--duration-ms",
-          "${durationMs}",
-          "--output-lines",
-          "${outputLines}"
-        ],
-        "enabled": true,
-        "timeout": 1000
+        "command": "./hooks/after_shell_execution.py"
       }
     ],
     "beforeReadFile": [
       {
-        "command": "python3",
-        "args": [
-          "~/.cursor/hooks/before_read_file.py",
-          "--file-extension",
-          "${fileExtension}",
-          "--file-size",
-          "${fileSize}"
-        ],
-        "enabled": true,
-        "timeout": 1000
+        "command": "./hooks/before_read_file.py"
       }
     ],
     "stop": [
       {
-        "command": "python3",
-        "args": [
-          "~/.cursor/hooks/stop.py",
-          "--session-duration-ms",
-          "${sessionDurationMs}"
-        ],
-        "enabled": true,
-        "timeout": 1000
+        "command": "./hooks/stop.py"
       }
     ]
-  },
-  "settings": {
-    "failOnError": false,
-    "logLevel": "info",
-    "logFile": ".cursor/hooks.log"
   }
 }
