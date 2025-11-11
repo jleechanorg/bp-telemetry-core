@@ -227,7 +227,7 @@ Both the **Stop** and **SessionEnd** hooks have special transcript processing be
 1. When Stop or SessionEnd hook fires with `transcript_path` in payload
 2. ClaudeCodeTranscriptMonitor detects the event
 3. Monitor reads the .jsonl transcript file
-4. Each transcript entry becomes a trace event
+4. Each transcript entry becomes a trace event with `event_type: transcript_trace`
 5. Trace events are sent back to Redis for processing
 6. All traces written to raw_traces table
 

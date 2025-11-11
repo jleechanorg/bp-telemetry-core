@@ -45,6 +45,9 @@ class EventType(str, Enum):
     # Database traces
     DATABASE_TRACE = "database_trace"
 
+    # Transcript traces
+    TRANSCRIPT_TRACE = "transcript_trace"
+
     # Acceptance tracking
     ACCEPTANCE_DECISION = "acceptance_decision"
 

@@ -267,7 +267,7 @@ class ClaudeCodeTranscriptMonitor:
         event = {
             "version": "0.1.0",
             "hook_type": "TranscriptTrace",
-            "event_type": "database_trace",  # Using same event_type as Cursor for consistency
+            "event_type": "transcript_trace",  # Distinct event type for Claude Code transcripts
             "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
             "platform": "claude_code",
             "session_id": session_id,
