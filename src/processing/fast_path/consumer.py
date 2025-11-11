@@ -356,13 +356,14 @@ class FastPathConsumer:
                 return
 
             # Claim messages that are older than retry timeout
+            # For immediate retry, use 0 min_idle_time (messages already delivered to this consumer)
             message_ids = [msg['message_id'] for msg in pending]
             if message_ids:
                 claimed = self.redis_client.xclaim(
                     self.stream_name,
                     self.consumer_group,
                     self.consumer_name,
-                    min_idle_time=300000,  # 5 minutes
+                    min_idle_time=0,  # Claim immediately for this consumer
                     message_ids=message_ids
                 )
 
