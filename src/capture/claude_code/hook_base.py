@@ -110,11 +110,23 @@ class ClaudeCodeHookBase:
         Returns:
             Event dictionary
         """
-        # Import version from package
-        hooks_dir = Path(__file__).parent
-        if str(hooks_dir) not in sys.path:
-            sys.path.insert(0, str(hooks_dir))
-        from capture.claude_code import __version__
+        # Get version - read from parent __init__.py or use default
+        __version__ = "0.1.0"
+        try:
+            hooks_dir = Path(__file__).parent.parent
+            init_path = hooks_dir / "__init__.py"
+            if init_path.exists():
+                with open(init_path, 'r') as f:
+                    for line in f:
+                        if line.startswith('__version__'):
+                            # Extract version from line like: __version__ = "0.1.0"
+                            import re
+                            match = re.search(r'["\']([^"\']+)["\']', line)
+                            if match:
+                                __version__ = match.group(1)
+                            break
+        except Exception:
+            pass  # Use default version
 
         event = {
             'version': __version__,
