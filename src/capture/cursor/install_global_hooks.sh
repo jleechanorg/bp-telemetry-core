@@ -52,9 +52,15 @@ echo "Copying session event sender..."
 cp "$SCRIPT_DIR/send_session_event.py" "$CURSOR_HOOKS_DIR/send_session_event.py"
 chmod +x "$CURSOR_HOOKS_DIR/send_session_event.py"
 
-# Copy hooks.json configuration
-echo "Copying hooks.json configuration..."
-cp "$SCRIPT_DIR/hooks.json" "$HOME/.cursor/hooks.json"
+# Merge hooks.json configuration
+echo "Merging hooks.json configuration..."
+chmod +x "$SCRIPT_DIR/merge_hooks_json.py"
+if python3 "$SCRIPT_DIR/merge_hooks_json.py" "$CURSOR_HOOKS_DIR" "$HOME/.cursor/hooks.json"; then
+    echo "  ✅ hooks.json merged successfully"
+else
+    echo "  ⚠️  Warning: Failed to merge hooks.json"
+    exit 1
+fi
 
 echo ""
 echo "✅ Global hooks installed successfully!"
