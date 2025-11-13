@@ -184,12 +184,16 @@ class CursorHookBase:
         Returns:
             Event dictionary
         """
-        # Import version from package
-        # hook_base.py is in ~/.cursor/hooks/, capture module is in ~/.cursor/hooks/capture/
-        hooks_dir = Path(__file__).parent
-        if str(hooks_dir) not in sys.path:
-            sys.path.insert(0, str(hooks_dir))
-        from capture import __version__
+        # Get version - use a default if import fails
+        # hook_base.py is in ~/.cursor/hooks/, capture module may not be available
+        try:
+            hooks_dir = Path(__file__).parent
+            if str(hooks_dir) not in sys.path:
+                sys.path.insert(0, str(hooks_dir))
+            from capture import __version__
+        except ImportError:
+            # Fallback to default version if capture module not available
+            __version__ = "0.1.0"
 
         event = {
             'version': __version__,

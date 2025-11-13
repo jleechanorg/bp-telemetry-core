@@ -79,6 +79,28 @@ class SQLiteBatchWriter:
         metadata = event.get('metadata', {})
         payload = event.get('payload', {})
 
+        # Extract lines_added (0 is a valid value, so check for None explicitly)
+        lines_added = payload.get('lines_added')
+        if lines_added is None:
+            lines_added = metadata.get('lines_added')
+        # Convert to int if present (0 is a valid value)
+        if lines_added is not None:
+            try:
+                lines_added = int(lines_added)
+            except (ValueError, TypeError):
+                lines_added = None
+
+        # Extract lines_removed (0 is a valid value, so check for None explicitly)
+        lines_removed = payload.get('lines_removed')
+        if lines_removed is None:
+            lines_removed = metadata.get('lines_removed')
+        # Convert to int if present (0 is a valid value)
+        if lines_removed is not None:
+            try:
+                lines_removed = int(lines_removed)
+            except (ValueError, TypeError):
+                lines_removed = None
+
         return {
             'event_id': event.get('event_id', ''),
             'session_id': event.get('session_id', ''),
@@ -90,8 +112,8 @@ class SQLiteBatchWriter:
             'tool_name': payload.get('tool') or payload.get('tool_name') or metadata.get('tool_name'),
             'duration_ms': payload.get('duration_ms') or metadata.get('duration_ms'),
             'tokens_used': payload.get('tokens_used') or metadata.get('tokens_used'),
-            'lines_added': payload.get('lines_added') or metadata.get('lines_added'),
-            'lines_removed': payload.get('lines_removed') or metadata.get('lines_removed'),
+            'lines_added': lines_added,
+            'lines_removed': lines_removed,
         }
 
     def write_batch_sync(self, events: List[Dict[str, Any]]) -> List[int]:
