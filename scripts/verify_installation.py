@@ -73,26 +73,28 @@ def check_redis_connection() -> bool:
         return False
 
 
-def check_hooks_installation(workspace: Path) -> bool:
-    """Check hooks are installed in workspace."""
-    print(f"\n🪝 Checking hooks installation in {workspace}...")
+def check_hooks_installation() -> bool:
+    """Check global hooks are installed."""
+    print(f"\n🪝 Checking global hooks installation...")
 
-    cursor_dir = workspace / ".cursor"
-    if not cursor_dir.exists():
-        print(f"   ❌ .cursor directory not found")
-        return False
-
-    hooks_dir = cursor_dir / "hooks" / "telemetry"
+    hooks_dir = Path.home() / ".cursor" / "hooks"
     if not hooks_dir.exists():
-        print(f"   ❌ hooks/telemetry directory not found")
+        print(f"   ❌ Global hooks directory not found: {hooks_dir}")
         print(f"   💡 Run: python scripts/install_cursor.py")
         return False
+
+    print(f"   ✅ Global hooks directory exists: {hooks_dir}")
 
     # Check for hook files
     expected_hooks = [
         'before_submit_prompt.py',
         'after_agent_response.py',
         'after_file_edit.py',
+        'before_mcp_execution.py',
+        'after_mcp_execution.py',
+        'before_shell_execution.py',
+        'after_shell_execution.py',
+        'before_read_file.py',
         'stop.py',
     ]
 
@@ -105,8 +107,24 @@ def check_hooks_installation(workspace: Path) -> bool:
             print(f"   ❌ {hook} (missing or not executable)")
             all_found = False
 
+    # Check hook_base.py
+    hook_base = hooks_dir / "hook_base.py"
+    if hook_base.exists():
+        print(f"   ✅ hook_base.py")
+    else:
+        print(f"   ⚠️  hook_base.py not found")
+        all_found = False
+
+    # Check shared modules
+    shared_dir = hooks_dir / "shared"
+    if shared_dir.exists():
+        print(f"   ✅ shared/ (modules)")
+    else:
+        print(f"   ⚠️  shared/ directory not found")
+        all_found = False
+
     # Check hooks.json
-    hooks_json = cursor_dir / "hooks.json"
+    hooks_json = Path.home() / ".cursor" / "hooks.json"
     if hooks_json.exists():
         print(f"   ✅ hooks.json")
     else:
@@ -138,15 +156,15 @@ def check_config_files() -> bool:
     return all_found
 
 
-def test_hook_execution(workspace: Path) -> bool:
+def test_hook_execution() -> bool:
     """Test that a hook can execute successfully."""
     print("\n🧪 Testing hook execution...")
 
-    hooks_dir = workspace / ".cursor" / "hooks" / "telemetry"
+    hooks_dir = Path.home() / ".cursor" / "hooks"
     test_hook = hooks_dir / "stop.py"
 
     if not test_hook.exists():
-        print(f"   ⚠️  Cannot test - hook not found")
+        print(f"   ⚠️  Cannot test - hook not found: {test_hook}")
         return False
 
     try:
@@ -158,7 +176,9 @@ def test_hook_execution(workspace: Path) -> bool:
         # Try to import and run hook
         import subprocess
         result = subprocess.run(
-            [sys.executable, str(test_hook), '--session-duration-ms', '1000'],
+            [sys.executable, str(test_hook)],
+            input='{"hook_event_name": "stop"}',
+            text=True,
             env=env,
             capture_output=True,
             timeout=5
@@ -170,7 +190,7 @@ def test_hook_execution(workspace: Path) -> bool:
         else:
             print(f"   ⚠️  Hook exited with code {result.returncode}")
             if result.stderr:
-                print(f"      Error: {result.stderr.decode()}")
+                print(f"      Error: {result.stderr}")
             return False
 
     except Exception as e:
@@ -183,14 +203,6 @@ def main():
     parser = argparse.ArgumentParser(
         description='Verify Blueplane Telemetry installation'
     )
-    parser.add_argument(
-        '--workspace',
-        type=Path,
-        default=Path.cwd(),
-        help='Workspace directory to check (default: current directory)'
-    )
-
-    args = parser.parse_args()
 
     print("=" * 60)
     print("Blueplane Telemetry - Installation Verification")
@@ -200,8 +212,8 @@ def main():
         ("Python Dependencies", lambda: check_python_dependencies()),
         ("Redis Connection", lambda: check_redis_connection()),
         ("Configuration Files", lambda: check_config_files()),
-        ("Hooks Installation", lambda: check_hooks_installation(args.workspace)),
-        ("Hook Execution", lambda: test_hook_execution(args.workspace)),
+        ("Global Hooks Installation", lambda: check_hooks_installation()),
+        ("Hook Execution", lambda: test_hook_execution()),
     ]
 
     results = {}

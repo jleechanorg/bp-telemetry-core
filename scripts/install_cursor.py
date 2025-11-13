@@ -6,13 +6,13 @@
 """
 Installation script for Cursor telemetry capture.
 
-Copies hooks to project .cursor directory and sets up configuration.
+Installs hooks globally to ~/.cursor/hooks/ for all Cursor workspaces.
 """
 
 import sys
 import os
 import shutil
-import json
+import subprocess
 import argparse
 from pathlib import Path
 
@@ -23,99 +23,53 @@ def find_project_root() -> Path:
     return current
 
 
-def install_hooks(workspace_path: Path, source_path: Path) -> bool:
+def install_hooks(source_path: Path) -> bool:
     """
-    Install hooks to workspace .cursor directory.
+    Install hooks globally to ~/.cursor/hooks/.
 
     Args:
-        workspace_path: Target workspace directory
         source_path: Source directory containing hooks
 
     Returns:
         True if successful, False otherwise
     """
     try:
-        # Create .cursor/hooks/telemetry directory
-        cursor_dir = workspace_path / ".cursor"
-        hooks_dir = cursor_dir / "hooks" / "telemetry"
-        hooks_dir.mkdir(parents=True, exist_ok=True)
-
-        # Copy hook scripts
-        source_hooks = source_path / "src" / "capture" / "cursor" / "hooks"
-        if not source_hooks.exists():
-            print(f"❌ Source hooks directory not found: {source_hooks}")
+        # Use the bash script for installation
+        install_script = source_path / "src" / "capture" / "cursor" / "install_global_hooks.sh"
+        
+        if not install_script.exists():
+            print(f"❌ Installation script not found: {install_script}")
             return False
 
-        print(f"📦 Copying hooks from {source_hooks} to {hooks_dir}")
+        print(f"📦 Installing global hooks using {install_script.name}")
+        
+        # Make script executable and run it
+        os.chmod(install_script, 0o755)
+        result = subprocess.run(
+            [str(install_script)],
+            cwd=install_script.parent,
+            capture_output=False
+        )
 
-        # Copy all Python files
-        for hook_file in source_hooks.glob("*.py"):
-            if hook_file.name != "hook_base.py":
-                dest = hooks_dir / hook_file.name
-                shutil.copy2(hook_file, dest)
-                # Make executable
-                os.chmod(dest, 0o755)
-                print(f"   ✅ {hook_file.name}")
-
-        # Copy hook_base.py to parent directory
-        hook_base = source_hooks.parent / "hook_base.py"
-        if hook_base.exists():
-            shutil.copy2(hook_base, hooks_dir.parent / "hook_base.py")
-            print(f"   ✅ hook_base.py")
-
-        # Copy shared modules
-        shared_dir = source_path / "src" / "capture" / "shared"
-        if shared_dir.exists():
-            target_shared = hooks_dir.parent / "shared"
-            if target_shared.exists():
-                shutil.rmtree(target_shared)
-            shutil.copytree(shared_dir, target_shared)
-            print(f"   ✅ shared/ (modules)")
-
-        # Copy hooks.json
-        hooks_json_src = source_hooks / "hooks.json"
-        if not hooks_json_src.exists():
-            hooks_json_src = source_hooks.parent / "hooks.json"
-
-        if hooks_json_src.exists():
-            hooks_json_dest = cursor_dir / "hooks.json"
-            shutil.copy2(hooks_json_src, hooks_json_dest)
-            print(f"   ✅ hooks.json")
+        if result.returncode == 0:
+            print(f"   ✅ Global hooks installed successfully")
+            return True
         else:
-            print(f"   ⚠️  hooks.json not found, creating minimal version")
-            create_minimal_hooks_json(cursor_dir)
-
-        return True
+            print(f"   ❌ Installation script failed with exit code {result.returncode}")
+            return False
 
     except Exception as e:
         print(f"❌ Failed to install hooks: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
-def create_minimal_hooks_json(cursor_dir: Path) -> None:
-    """Create minimal hooks.json configuration."""
-    hooks_config = {
-        "version": 1,
-        "description": "Blueplane Telemetry Hooks",
-        "hooks": {
-            "beforeSubmitPrompt": [{"command": "hooks/telemetry/before_submit_prompt.py", "enabled": True}],
-            "afterAgentResponse": [{"command": "hooks/telemetry/after_agent_response.py", "enabled": True}],
-            "afterFileEdit": [{"command": "hooks/telemetry/after_file_edit.py", "enabled": True}],
-            "stop": [{"command": "hooks/telemetry/stop.py", "enabled": True}],
-        }
-    }
-
-    hooks_json_path = cursor_dir / "hooks.json"
-    with open(hooks_json_path, 'w') as f:
-        json.dump(hooks_config, f, indent=2)
-
-
-def install_config(workspace_path: Path, source_path: Path) -> bool:
+def install_config(source_path: Path) -> bool:
     """
     Install configuration files.
 
     Args:
-        workspace_path: Target workspace directory
         source_path: Source directory containing config
 
     Returns:
@@ -147,13 +101,7 @@ def install_config(workspace_path: Path, source_path: Path) -> bool:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='Install Cursor telemetry capture'
-    )
-    parser.add_argument(
-        '--workspace',
-        type=Path,
-        default=Path.cwd(),
-        help='Workspace directory (default: current directory)'
+        description='Install Cursor telemetry capture (global hooks)'
     )
     parser.add_argument(
         '--dry-run',
@@ -164,7 +112,7 @@ def main():
     args = parser.parse_args()
 
     print("=" * 60)
-    print("Blueplane Telemetry - Cursor Installation")
+    print("Blueplane Telemetry - Cursor Global Hooks Installation")
     print("=" * 60)
 
     if args.dry_run:
@@ -173,23 +121,22 @@ def main():
     # Find source directory
     source_path = find_project_root()
     print(f"\n📂 Source: {source_path}")
-    print(f"📂 Workspace: {args.workspace}\n")
 
     if args.dry_run:
-        print("Would install:")
-        print("  - Hooks to .cursor/hooks/telemetry/")
+        print("\nWould install:")
+        print("  - Global hooks to ~/.cursor/hooks/")
         print("  - Configuration to ~/.blueplane/")
         print("\nRun without --dry-run to proceed")
         return 0
 
     # Install hooks
-    print("📦 Installing hooks...")
-    if not install_hooks(args.workspace, source_path):
+    print("\n📦 Installing global hooks...")
+    if not install_hooks(source_path):
         return 1
 
     # Install configuration
     print("\n⚙️  Installing configuration...")
-    if not install_config(args.workspace, source_path):
+    if not install_config(source_path):
         return 1
 
     print("\n" + "=" * 60)
@@ -206,6 +153,7 @@ def main():
     print("  4. (Optional) Install Cursor extension for database monitoring")
     print("\n💡 Verify installation:")
     print("     python scripts/verify_installation.py")
+    print("\n📝 Note: Global hooks will fire for ALL Cursor workspaces")
 
     return 0
 
