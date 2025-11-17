@@ -25,6 +25,8 @@ from .fast_path.cdc_publisher import CDCPublisher
 from .cursor.session_monitor import SessionMonitor
 from .cursor.database_monitor import CursorDatabaseMonitor
 from .claude_code.transcript_monitor import ClaudeCodeTranscriptMonitor
+from .claude_code.session_monitor import ClaudeCodeSessionMonitor
+from .claude_code.jsonl_monitor import ClaudeCodeJSONLMonitor
 from ..capture.shared.config import Config
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,8 @@ class TelemetryServer:
         self.session_monitor: Optional[SessionMonitor] = None
         self.cursor_monitor: Optional[CursorDatabaseMonitor] = None
         self.claude_code_monitor: Optional[ClaudeCodeTranscriptMonitor] = None
+        self.claude_session_monitor: Optional[ClaudeCodeSessionMonitor] = None
+        self.claude_jsonl_monitor: Optional[ClaudeCodeJSONLMonitor] = None
         self.running = False
         self.monitor_threads: list[threading.Thread] = []
 
@@ -158,19 +162,31 @@ class TelemetryServer:
         logger.info("Cursor database monitor initialized")
 
     def _initialize_claude_code_monitor(self) -> None:
-        """Initialize Claude Code transcript monitor."""
+        """Initialize Claude Code monitors (session, JSONL, transcript)."""
         # Check if claude code monitoring is enabled (default: True)
         enabled = True  # TODO: Load from config
 
         if not enabled:
-            logger.info("Claude Code transcript monitoring is disabled")
+            logger.info("Claude Code monitoring is disabled")
             return
 
-        logger.info("Initializing Claude Code transcript monitor")
+        logger.info("Initializing Claude Code monitors")
 
         stream_config = self.config.get_stream_config("message_queue")
 
-        # Create transcript monitor
+        # Create session monitor (tracks active sessions via Redis events)
+        self.claude_session_monitor = ClaudeCodeSessionMonitor(
+            redis_client=self.redis_client
+        )
+
+        # Create JSONL monitor (watches JSONL files for active sessions)
+        self.claude_jsonl_monitor = ClaudeCodeJSONLMonitor(
+            redis_client=self.redis_client,
+            session_monitor=self.claude_session_monitor,
+            poll_interval=30.0,
+        )
+
+        # Create transcript monitor (existing implementation)
         self.claude_code_monitor = ClaudeCodeTranscriptMonitor(
             redis_client=self.redis_client,
             stream_name=stream_config.name,
@@ -179,7 +195,7 @@ class TelemetryServer:
             poll_interval=1.0,
         )
 
-        logger.info("Claude Code transcript monitor initialized")
+        logger.info("Claude Code monitors initialized")
 
     def start(self) -> None:
         """Start the server."""
@@ -217,13 +233,34 @@ class TelemetryServer:
                 cursor_thread.start()
                 self.monitor_threads.extend([session_thread, cursor_thread])
 
+            # Start Claude Code monitors (if enabled)
+            if self.claude_session_monitor and self.claude_jsonl_monitor:
+                def run_claude_session_monitor():
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(self.claude_session_monitor.start())
+
+                def run_claude_jsonl_monitor():
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(self.claude_jsonl_monitor.start())
+
+                claude_session_thread = threading.Thread(target=run_claude_session_monitor, daemon=True)
+                claude_jsonl_thread = threading.Thread(target=run_claude_jsonl_monitor, daemon=True)
+                claude_session_thread.start()
+                claude_jsonl_thread.start()
+                self.monitor_threads.extend([claude_session_thread, claude_jsonl_thread])
+                logger.info("Claude Code session and JSONL monitors started")
+
             if self.claude_code_monitor:
                 def run_claude_code_monitor():
                     import asyncio
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     loop.run_until_complete(self.claude_code_monitor._monitor_loop())
-                
+
                 # Set running flag
                 self.claude_code_monitor.running = True
                 # Ensure consumer group exists
@@ -240,7 +277,7 @@ class TelemetryServer:
                         logger.error("Failed to create consumer group: %s", e)
                         raise
                     logger.debug("Consumer group already exists: %s", self.claude_code_monitor.consumer_group)
-                
+
                 claude_thread = threading.Thread(target=run_claude_code_monitor, daemon=True)
                 claude_thread.start()
                 self.monitor_threads.append(claude_thread)
@@ -262,12 +299,26 @@ class TelemetryServer:
         logger.info("Stopping server...")
         self.running = False
 
+        # Stop Claude Code monitors
+        if self.claude_jsonl_monitor:
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self.claude_jsonl_monitor.stop())
+
+        if self.claude_session_monitor:
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self.claude_session_monitor.stop())
+
         if self.claude_code_monitor:
             import asyncio
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(self.claude_code_monitor.stop())
 
+        # Stop Cursor monitors
         if self.cursor_monitor:
             import asyncio
             loop = asyncio.new_event_loop()
@@ -280,9 +331,11 @@ class TelemetryServer:
             asyncio.set_event_loop(loop)
             loop.run_until_complete(self.session_monitor.stop())
 
+        # Stop consumer
         if self.consumer:
             self.consumer.stop()
 
+        # Close Redis connection
         if self.redis_client:
             self.redis_client.close()
 
