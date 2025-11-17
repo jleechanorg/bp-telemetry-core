@@ -100,6 +100,7 @@ The MCP server provides five categories of tools for AI assistants:
 | **Search** | Find relevant sessions | `search_similar_tasks`, `find_successful_patterns` |
 | **Optimization** | Improve generation | `optimize_context`, `suggest_strategy` |
 | **Tracking** | Feedback loop | `track_decision`, `log_outcome` |
+| **Traces (Claude Code)** | Deep trace introspection | `trace_get_timeline`, `trace_compare_generation` |
 
 ### Tool Definitions
 
@@ -348,6 +349,58 @@ interface TrackingTools {
   }): FeedbackResponse;
 }
 ```
+
+#### Trace Tools (Claude Code)
+
+```typescript
+interface TraceTools {
+  /**
+   * Phase 1: Paginated timeline for a Claude session.
+   */
+  trace_get_timeline(params: {
+    session_id: string;
+    project_name?: string;
+    start?: string;
+    end?: string;
+    cursor?: number;
+    limit?: number;
+    event_types?: string[];
+  }): {
+    items: TraceTimelineItem[];
+    has_more: boolean;
+    next_cursor?: number;
+  };
+
+  /**
+   * Phase 1: Compare a generation UUID against surrounding events.
+   */
+  trace_compare_generation(params: {
+    generation_id: string;
+    tolerance_seconds?: number;
+  }): TraceComparison;
+
+  /**
+   * Phase 2: Detect gaps where traces stop arriving.
+   */
+  trace_find_gaps(params: {
+    session_id?: string;
+    project_name?: string;
+    minimum_gap_seconds?: number;
+    since?: string;
+  }): TraceGap[];
+
+  /**
+   * Phase 2: Targeted payload inspection with selector syntax.
+   */
+  trace_inspect_payload(params: {
+    sequence?: number;
+    uuid?: string;
+    selectors?: string[];
+  }): TraceInspectionResult;
+}
+```
+
+> **Scope:** Trace tools are explicitly scoped to Claude Code telemetry and are only exposed on localhost transports to protect sensitive session data.
 
 ## Implementation
 

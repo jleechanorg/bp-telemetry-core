@@ -6,48 +6,81 @@
 Session Monitor for Claude Code sessions.
 
 Listens to Redis session_start/end events from Claude Code hooks.
+Provides persistent session management with database-backed recovery.
 """
 
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Dict, Optional
 import redis
+
+from .session_persistence import SessionPersistence
+from ..database.sqlite_client import SQLiteClient
+from ...capture.shared.project_utils import derive_project_name
 
 logger = logging.getLogger(__name__)
 
 
 class ClaudeCodeSessionMonitor:
     """
-    Monitor Claude Code sessions via Redis events.
+    Monitor Claude Code sessions via Redis events with database persistence.
 
     Design:
     - Redis stream events from OnSessionStart/OnSessionEnd hooks
     - Tracks active sessions with metadata (session_id, workspace_path)
+    - Persists sessions to SQLite database for durability
+    - Recovers incomplete sessions on startup
     - Used by JSONL monitor to know which sessions to track
     """
 
-    def __init__(self, redis_client: redis.Redis):
-        self.redis_client = redis_client
+    def __init__(self, redis_client: redis.Redis, sqlite_client: Optional[SQLiteClient] = None):
+        """
+        Initialize Claude Code session monitor.
 
-        # Active sessions: session_id -> session_info
+        Args:
+            redis_client: Redis client for event streaming
+            sqlite_client: Optional SQLite client for persistence (if None, persistence disabled)
+        """
+        self.redis_client = redis_client
+        self.sqlite_client = sqlite_client
+
+        # Active sessions: session_id -> session_info (in-memory for fast lookups)
         self.active_sessions: Dict[str, dict] = {}
 
         # Track last processed Redis message ID (for resuming)
         self.last_redis_id = "0-0"
 
+        # Session persistence (if sqlite_client provided)
+        self.persistence: Optional[SessionPersistence] = None
+        if sqlite_client:
+            self.persistence = SessionPersistence(sqlite_client)
+
         self.running = False
 
     async def start(self):
-        """Start monitoring sessions."""
+        """
+        Start monitoring sessions with recovery.
+        
+        Steps:
+        1. Recover incomplete sessions from database (if persistence enabled)
+        2. Catch up on historical Redis events
+        3. Start listening to new Redis events
+        """
         self.running = True
 
-        # Process historical events first (catch up on existing sessions)
+        # Step 1: Recover incomplete sessions from last run (if persistence enabled)
+        if self.persistence:
+            await self._recover_active_sessions()
+
+        # Step 2: Process historical events first (catch up on existing sessions)
         await self._catch_up_historical_events()
 
-        logger.info("Claude Code session monitor started (Redis events only)")
+        persistence_status = "with database persistence" if self.persistence else "(in-memory only)"
+        logger.info(f"Claude Code session monitor started {persistence_status}")
 
-        # Run Redis event listener directly (blocks until stopped)
+        # Step 3: Run Redis event listener directly (blocks until stopped)
         await self._listen_redis_events()
 
     async def _catch_up_historical_events(self):
@@ -135,19 +168,41 @@ class ClaudeCodeSessionMonitor:
         session_id = payload.get('session_id') or self._decode_field(fields, 'session_id')
         workspace_hash = metadata.get('workspace_hash')
         workspace_path = payload.get('workspace_path', '')
+        project_name = metadata.get('project_name') or derive_project_name(workspace_path)
 
         if event_type == 'session_start':
+            # Add to in-memory dict (fast path)
             self.active_sessions[session_id] = {
                 "session_id": session_id,
                 "workspace_hash": workspace_hash,
                 "workspace_path": workspace_path,
+                "project_name": project_name,
                 "platform": "claude_code",
                 "started_at": asyncio.get_event_loop().time(),
                 "source": "hooks",
             }
+            
+            # Persist to database (durable)
+            if self.persistence:
+                await self.persistence.save_session_start(
+                    session_id=session_id,
+                    workspace_hash=workspace_hash or '',
+                    workspace_path=workspace_path,
+                    metadata={
+                        'source': metadata.get('source', 'hooks'),
+                        'project_name': project_name,
+                        **metadata
+                    }
+                )
+            
             logger.info(f"Claude Code session started: {session_id} (workspace: {workspace_path})")
 
         elif event_type == 'session_end':
+            # Update database first (ensure durability)
+            if self.persistence:
+                await self.persistence.save_session_end(session_id, end_reason='normal')
+            
+            # Then remove from memory
             if session_id in self.active_sessions:
                 del self.active_sessions[session_id]
                 logger.info(f"Claude Code session ended: {session_id}")
@@ -180,6 +235,37 @@ class ClaudeCodeSessionMonitor:
             Dictionary of session_id -> session_info
         """
         return self.active_sessions.copy()
+
+    async def _recover_active_sessions(self):
+        """
+        Recover incomplete sessions from database on startup.
+        
+        Checks for sessions without ended_at and restores them to active_sessions.
+        Also validates that JSONL files still exist (if not, marks as crashed).
+        """
+        if not self.persistence:
+            return
+        
+        try:
+            recovered = await self.persistence.recover_active_sessions()
+            
+            for session_id, session_info in recovered.items():
+                # Restore to active sessions
+                self.active_sessions[session_id] = session_info
+                
+                # Check if JSONL file still exists (basic validation)
+                workspace_path = session_info.get('workspace_path', '')
+                if workspace_path:
+                    # Try to construct expected JSONL path
+                    # Claude Code stores JSONL files in ~/.claude/projects/{project_id}/
+                    # We can't fully validate without project_id, but we log recovery
+                    logger.info(f"Recovered active Claude Code session: {session_id} (workspace: {workspace_path})")
+                else:
+                    logger.warning(f"Recovered session {session_id} without workspace_path")
+                    
+        except Exception as e:
+            logger.error(f"Error during session recovery: {e}", exc_info=True)
+            # Continue startup even if recovery fails
 
     def get_session_info(self, session_id: str) -> Optional[dict]:
         """

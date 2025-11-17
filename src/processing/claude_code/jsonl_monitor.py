@@ -21,6 +21,7 @@ from typing import Dict, Optional, Set
 import redis
 
 from .session_monitor import ClaudeCodeSessionMonitor
+from ...capture.shared.project_utils import derive_project_name
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +275,8 @@ class ClaudeCodeJSONLMonitor:
             await self._detect_new_agents(entry_data, session_id)
 
             # Build event for Redis
+            project_name = session_info.get("project_name") or derive_project_name(session_info.get("workspace_path"))
+
             event = {
                 "version": "0.1.0",
                 "hook_type": "JSONLTrace",
@@ -284,6 +287,7 @@ class ClaudeCodeJSONLMonitor:
                 "external_session_id": session_id,
                 "metadata": {
                     "workspace_hash": session_info.get("workspace_hash"),
+                    "project_name": project_name,
                     "source": "jsonl_monitor",
                 },
                 "payload": {

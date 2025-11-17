@@ -29,6 +29,7 @@ CREATE TABLE raw_traces (
 
     -- Context (indexed for fast queries)
     workspace_hash TEXT,             -- ✅ Correlation key
+    project_name TEXT,               -- ✅ Human-readable project label
     model TEXT,
     tool_name TEXT,
 
