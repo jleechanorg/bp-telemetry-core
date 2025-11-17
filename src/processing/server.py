@@ -164,6 +164,8 @@ class TelemetryServer:
         """Initialize Cursor Markdown History monitor."""
         # Load cursor config
         markdown_config = self.config.get_cursor_config("markdown_monitor")
+        duckdb_config = self.config.get_cursor_config("duckdb_sink")
+        
         enabled = markdown_config.get("enabled", True)
 
         if not enabled:
@@ -182,6 +184,12 @@ class TelemetryServer:
         if output_dir:
             output_dir = Path(output_dir)
         
+        # Get DuckDB settings
+        enable_duckdb = duckdb_config.get("enabled", False)
+        duckdb_path = duckdb_config.get("database_path")
+        if duckdb_path:
+            duckdb_path = Path(duckdb_path)
+        
         # Create markdown monitor
         self.markdown_monitor = CursorMarkdownMonitor(
             session_monitor=self.session_monitor,
@@ -189,13 +197,16 @@ class TelemetryServer:
             poll_interval=markdown_config.get("poll_interval_seconds", 120.0),
             debounce_delay=markdown_config.get("debounce_delay_seconds", 10.0),
             query_timeout=markdown_config.get("query_timeout_seconds", 1.5),
+            enable_duckdb=enable_duckdb,
+            duckdb_path=duckdb_path,
         )
 
         logger.info(
             f"Cursor Markdown History monitor initialized "
             f"(output_dir={output_dir or 'workspace/.history/'}, "
             f"poll_interval={markdown_config.get('poll_interval_seconds', 120)}s, "
-            f"debounce={markdown_config.get('debounce_delay_seconds', 10)}s)"
+            f"debounce={markdown_config.get('debounce_delay_seconds', 10)}s, "
+            f"duckdb_enabled={enable_duckdb})"
         )
 
     def _initialize_claude_code_monitor(self) -> None:

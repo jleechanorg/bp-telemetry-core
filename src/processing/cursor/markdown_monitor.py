@@ -24,6 +24,13 @@ from .markdown_writer import CursorMarkdownWriter, TRACE_RELEVANT_KEYS
 
 logger = logging.getLogger(__name__)
 
+# Optional DuckDB support
+try:
+    from .duckdb_writer import CursorDuckDBWriter, DUCKDB_AVAILABLE
+except ImportError:
+    DUCKDB_AVAILABLE = False
+    CursorDuckDBWriter = None
+
 
 class CursorMarkdownMonitor:
     """
@@ -40,6 +47,8 @@ class CursorMarkdownMonitor:
         poll_interval: float = 120.0,  # 2-minute polling fallback
         debounce_delay: float = 10.0,  # Default 10-12s for normal operation
         query_timeout: float = 1.5,
+        enable_duckdb: bool = False,
+        duckdb_path: Optional[Path] = None,
     ):
         """
         Initialize Markdown monitor.
@@ -50,6 +59,8 @@ class CursorMarkdownMonitor:
             poll_interval: Polling interval in seconds (default: 120s / 2 minutes)
             debounce_delay: Delay before writing after change (default: 10s)
             query_timeout: Timeout for database queries (default: 1.5s)
+            enable_duckdb: Enable DuckDB sink (default: False)
+            duckdb_path: Path to DuckDB database (default: ~/.blueplane/cursor_history.duckdb)
         """
         self.session_monitor = session_monitor
         self.workspace_mapper = WorkspaceMapper(session_monitor)
@@ -58,6 +69,21 @@ class CursorMarkdownMonitor:
         self.poll_interval = poll_interval
         self.debounce_delay = debounce_delay
         self.query_timeout = query_timeout
+        
+        # Optional DuckDB support
+        self.enable_duckdb = enable_duckdb and DUCKDB_AVAILABLE
+        self.duckdb_writer: Optional[CursorDuckDBWriter] = None
+        
+        if self.enable_duckdb:
+            if DUCKDB_AVAILABLE:
+                self.duckdb_writer = CursorDuckDBWriter(duckdb_path)
+                logger.info("DuckDB sink enabled")
+            else:
+                logger.warning(
+                    "DuckDB sink requested but DuckDB not available. "
+                    "Install with: pip install duckdb>=0.9.0"
+                )
+                self.enable_duckdb = False
         
         # Track last written state per workspace
         self.last_data_hash: Dict[str, str] = {}  # workspace_hash -> data hash
@@ -96,6 +122,13 @@ class CursorMarkdownMonitor:
             except:
                 pass
         self.db_connections.clear()
+        
+        # Close DuckDB connection
+        if self.duckdb_writer:
+            try:
+                self.duckdb_writer.close()
+            except:
+                pass
         
         logger.info("Markdown monitor stopped")
 
@@ -335,6 +368,21 @@ class CursorMarkdownMonitor:
                 data,
                 timestamp
             )
+            
+            # Write to DuckDB if enabled
+            if self.enable_duckdb and self.duckdb_writer:
+                try:
+                    self.duckdb_writer.write_workspace_history(
+                        workspace_hash,
+                        workspace_path,
+                        data,
+                        data_hash,
+                        timestamp,
+                        filepath
+                    )
+                    logger.info(f"Wrote workspace snapshot to DuckDB for {workspace_hash}")
+                except Exception as e:
+                    logger.error(f"Error writing to DuckDB for workspace {workspace_hash}: {e}")
             
             # Update last hash
             self.last_data_hash[workspace_hash] = data_hash
