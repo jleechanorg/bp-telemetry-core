@@ -199,6 +199,129 @@ def create_trace_stats_table(client: SQLiteClient) -> None:
     logger.info("Created trace_stats table")
 
 
+def create_claude_raw_traces_table(client: SQLiteClient) -> None:
+    """
+    Create claude_raw_traces table for Claude Code JSONL events.
+
+    This table stores all events from Claude Code JSONL files with:
+    - Indexed fields for common queries
+    - Full event data compressed with zlib
+    - Platform-specific fields (uuid, parentUuid, requestId, agentId)
+    - Support for both main session and agent (Task tool) files
+
+    Args:
+        client: SQLiteClient instance
+    """
+    sql = """
+    CREATE TABLE IF NOT EXISTS claude_raw_traces (
+        -- Primary key and metadata
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+        -- Event identification (indexed)
+        event_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        platform TEXT NOT NULL DEFAULT 'claude_code',
+        timestamp TIMESTAMP NOT NULL,
+
+        -- Claude-specific identifiers
+        uuid TEXT,
+        parent_uuid TEXT,
+        request_id TEXT,
+        agent_id TEXT,
+
+        -- Context fields
+        workspace_hash TEXT,
+        is_sidechain BOOLEAN DEFAULT 0,
+        user_type TEXT,
+        cwd TEXT,
+        version TEXT,
+        git_branch TEXT,
+
+        -- Message fields (user/assistant events)
+        message_role TEXT,
+        message_model TEXT,
+        message_id TEXT,
+        message_type TEXT,
+        stop_reason TEXT,
+        stop_sequence TEXT,
+
+        -- Token usage fields
+        input_tokens INTEGER,
+        cache_creation_input_tokens INTEGER,
+        cache_read_input_tokens INTEGER,
+        output_tokens INTEGER,
+        service_tier TEXT,
+        cache_5m_tokens INTEGER,
+        cache_1h_tokens INTEGER,
+
+        -- Queue operation fields
+        operation TEXT,
+
+        -- System event fields
+        subtype TEXT,
+        level TEXT,
+        is_meta BOOLEAN DEFAULT 0,
+
+        -- Summary fields
+        summary TEXT,
+        leaf_uuid TEXT,
+
+        -- Derived metrics
+        duration_ms INTEGER,
+        tokens_used INTEGER,
+        tool_calls_count INTEGER,
+
+        -- Compressed full event (zlib level 6)
+        event_data BLOB NOT NULL,
+
+        -- Generated columns for partitioning
+        event_date DATE GENERATED ALWAYS AS (DATE(timestamp)),
+        event_hour INTEGER GENERATED ALWAYS AS (CAST(strftime('%H', timestamp) AS INTEGER))
+    );
+    """
+    client.execute(sql)
+    logger.info("Created claude_raw_traces table")
+
+
+def create_claude_indexes(client: SQLiteClient) -> None:
+    """
+    Create indexes for Claude Code raw traces.
+
+    Args:
+        client: SQLiteClient instance
+    """
+    indexes = [
+        # Primary query patterns
+        "CREATE INDEX IF NOT EXISTS idx_claude_session_time ON claude_raw_traces(session_id, timestamp);",
+        "CREATE INDEX IF NOT EXISTS idx_claude_event_type_time ON claude_raw_traces(event_type, timestamp);",
+
+        # UUID lookups for threading
+        "CREATE INDEX IF NOT EXISTS idx_claude_uuid ON claude_raw_traces(uuid);",
+        "CREATE INDEX IF NOT EXISTS idx_claude_parent_uuid ON claude_raw_traces(parent_uuid);",
+
+        # API request tracking
+        "CREATE INDEX IF NOT EXISTS idx_claude_request_id ON claude_raw_traces(request_id);",
+
+        # Model analysis
+        "CREATE INDEX IF NOT EXISTS idx_claude_message_model ON claude_raw_traces(message_model);",
+
+        # Time-based partitioning
+        "CREATE INDEX IF NOT EXISTS idx_claude_date_hour ON claude_raw_traces(event_date, event_hour);",
+        "CREATE INDEX IF NOT EXISTS idx_claude_timestamp ON claude_raw_traces(timestamp DESC);",
+
+        # Agent tracking
+        "CREATE INDEX IF NOT EXISTS idx_claude_agent_id ON claude_raw_traces(agent_id);",
+        "CREATE INDEX IF NOT EXISTS idx_claude_sidechain ON claude_raw_traces(is_sidechain, session_id);",
+    ]
+
+    for index_sql in indexes:
+        client.execute(index_sql)
+
+    logger.info("Created Claude Code indexes")
+
+
 def create_indexes(client: SQLiteClient) -> None:
     """
     Create indexes for common query patterns.
@@ -235,6 +358,7 @@ def create_schema(client: SQLiteClient) -> None:
 
     # Create tables
     create_raw_traces_table(client)
+    create_claude_raw_traces_table(client)
     create_conversations_table(client)
     create_conversation_turns_table(client)
     create_code_changes_table(client)
@@ -243,6 +367,7 @@ def create_schema(client: SQLiteClient) -> None:
 
     # Create indexes
     create_indexes(client)
+    create_claude_indexes(client)
 
     logger.info("Database schema created successfully")
 
