@@ -18,6 +18,7 @@ import redis
 
 from .session_persistence import SessionPersistence
 from ..database.sqlite_client import SQLiteClient
+from ...capture.shared.project_utils import derive_project_name
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,7 @@ class ClaudeCodeSessionMonitor:
         session_id = payload.get('session_id') or self._decode_field(fields, 'session_id')
         workspace_hash = metadata.get('workspace_hash')
         workspace_path = payload.get('workspace_path', '')
+        project_name = metadata.get('project_name') or derive_project_name(workspace_path)
 
         if event_type == 'session_start':
             # Add to in-memory dict (fast path)
@@ -174,6 +176,7 @@ class ClaudeCodeSessionMonitor:
                 "session_id": session_id,
                 "workspace_hash": workspace_hash,
                 "workspace_path": workspace_path,
+                "project_name": project_name,
                 "platform": "claude_code",
                 "started_at": asyncio.get_event_loop().time(),
                 "source": "hooks",
@@ -187,6 +190,7 @@ class ClaudeCodeSessionMonitor:
                     workspace_path=workspace_path,
                     metadata={
                         'source': metadata.get('source', 'hooks'),
+                        'project_name': project_name,
                         **metadata
                     }
                 )
@@ -231,6 +235,31 @@ class ClaudeCodeSessionMonitor:
             Dictionary of session_id -> session_info
         """
         return self.active_sessions.copy()
+
+    async def update_session_workspace(self, session_id: str, workspace_path: str) -> None:
+        """
+        Update the workspace path for a session.
+
+        Called when workspace path is discovered from JSONL content.
+
+        Args:
+            session_id: Session identifier
+            workspace_path: Discovered workspace path
+        """
+        if session_id in self.active_sessions:
+            self.active_sessions[session_id]["workspace_path"] = workspace_path
+            self.active_sessions[session_id]["workspace_hash"] = self._hash_workspace(workspace_path)
+
+            # Update in database if persistence is enabled
+            if self.persistence:
+                await self.persistence.update_workspace_path(session_id, workspace_path)
+
+            logger.info(f"Updated workspace path for session {session_id}: {workspace_path}")
+
+    def _hash_workspace(self, workspace_path: str) -> str:
+        """Generate a hash of the workspace path."""
+        import hashlib
+        return hashlib.sha256(workspace_path.encode()).hexdigest()[:16]
 
     async def _recover_active_sessions(self):
         """

@@ -41,6 +41,7 @@ def create_raw_traces_table(client: SQLiteClient) -> None:
 
         -- Context fields
         workspace_hash TEXT,
+        project_name TEXT,
         model TEXT,
         tool_name TEXT,
 
@@ -244,6 +245,7 @@ def create_claude_raw_traces_table(client: SQLiteClient) -> None:
 
         -- Context fields
         workspace_hash TEXT,
+        project_name TEXT,
         is_sidechain BOOLEAN DEFAULT 0,
         user_type TEXT,
         cwd TEXT,
@@ -307,6 +309,7 @@ def create_claude_indexes(client: SQLiteClient) -> None:
         # Primary query patterns
         "CREATE INDEX IF NOT EXISTS idx_claude_session_time ON claude_raw_traces(session_id, timestamp);",
         "CREATE INDEX IF NOT EXISTS idx_claude_event_type_time ON claude_raw_traces(event_type, timestamp);",
+        "CREATE INDEX IF NOT EXISTS idx_claude_project_name ON claude_raw_traces(project_name);",
 
         # UUID lookups for threading
         "CREATE INDEX IF NOT EXISTS idx_claude_uuid ON claude_raw_traces(uuid);",
@@ -345,6 +348,7 @@ def create_indexes(client: SQLiteClient) -> None:
         "CREATE INDEX IF NOT EXISTS idx_event_type_time ON raw_traces(event_type, timestamp);",
         "CREATE INDEX IF NOT EXISTS idx_date_hour ON raw_traces(event_date, event_hour);",
         "CREATE INDEX IF NOT EXISTS idx_timestamp ON raw_traces(timestamp DESC);",
+        "CREATE INDEX IF NOT EXISTS idx_project_name ON raw_traces(project_name);",
         "CREATE INDEX IF NOT EXISTS idx_conv_session ON conversations(session_id);",
         "CREATE INDEX IF NOT EXISTS idx_conv_platform_time ON conversations(platform, started_at DESC);",
         # Index for Claude Code session recovery (active sessions query)
