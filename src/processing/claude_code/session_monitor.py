@@ -182,7 +182,7 @@ class ClaudeCodeSessionMonitor:
 
         session_id = payload.get('session_id') or self._decode_field(fields, 'session_id')
         workspace_hash = metadata.get('workspace_hash')
-        workspace_path = payload.get('workspace_path', '')
+        workspace_path = metadata.get('workspace_path') or payload.get('workspace_path', '')
         project_name = metadata.get('project_name') or derive_project_name(workspace_path)
 
         if event_type == 'session_start':

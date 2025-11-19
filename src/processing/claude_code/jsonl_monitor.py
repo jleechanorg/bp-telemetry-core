@@ -244,8 +244,8 @@ class ClaudeCodeJSONLMonitor:
 
                 logger.debug(f"Found session file at {session_file}")
 
-        # Try to recover workspace path from project slug
-        workspace_path = recover_workspace_path_from_slug(project_dir) or ""
+                # Try to recover workspace path from project slug
+                workspace_path = recover_workspace_path_from_slug(project_dir) or ""
 
                 # Validate by reading first few lines of JSONL to confirm
                 try:
