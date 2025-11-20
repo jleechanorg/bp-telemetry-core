@@ -28,6 +28,8 @@ from .cursor.markdown_monitor import CursorMarkdownMonitor
 from .cursor.session_timeout import CursorSessionTimeoutManager
 from .cursor.metrics import get_metrics
 from .cursor.unified_cursor_monitor import UnifiedCursorMonitor, CursorMonitorConfig
+from .cursor.cursor_event_consumer import CursorEventConsumer
+from .cursor.cursor_raw_traces_writer import CursorRawTracesWriter
 from .claude_code.transcript_monitor import ClaudeCodeTranscriptMonitor
 from .claude_code.session_monitor import ClaudeCodeSessionMonitor
 from .claude_code.jsonl_monitor import ClaudeCodeJSONLMonitor
@@ -68,6 +70,7 @@ class TelemetryServer:
         self.cursor_timeout_manager: Optional[CursorSessionTimeoutManager] = None
         self.cursor_monitor: Optional[CursorDatabaseMonitor] = None
         self.unified_cursor_monitor: Optional[UnifiedCursorMonitor] = None
+        self.cursor_event_consumer: Optional[CursorEventConsumer] = None
         self.markdown_monitor: Optional[CursorMarkdownMonitor] = None
         self.claude_code_monitor: Optional[ClaudeCodeTranscriptMonitor] = None
         self.claude_session_monitor: Optional[ClaudeCodeSessionMonitor] = None
@@ -294,6 +297,24 @@ class TelemetryServer:
             config=monitor_config
         )
 
+        # Create CursorRawTracesWriter for consumer
+        cursor_writer = CursorRawTracesWriter(
+            self.sqlite_client,
+            batch_size=unified_config.get("batch_size", 100)
+        )
+
+        # Create CursorEventConsumer
+        self.cursor_event_consumer = CursorEventConsumer(
+            redis_client=self.redis_client,
+            writer=cursor_writer,
+            stream_name="telemetry:events",
+            consumer_group="processors",
+            consumer_name="cursor-raw-traces-consumer",
+            max_retries=unified_config.get("max_retries", 3),
+            claim_min_idle_time=unified_config.get("claim_min_idle_time", 60000),
+            pending_check_interval=unified_config.get("pending_check_interval", 30),
+        )
+
         logger.info(
             f"UnifiedCursorMonitor initialized "
             f"(poll_interval={monitor_config.poll_interval}s, "
@@ -438,6 +459,24 @@ class TelemetryServer:
                 unified_cursor_thread.start()
                 self.monitor_threads.append(unified_cursor_thread)
                 logger.info("UnifiedCursorMonitor started")
+
+            # Start cursor event consumer (if enabled)
+            if self.cursor_event_consumer:
+                def run_cursor_event_consumer():
+                    import asyncio
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(self.cursor_event_consumer.start())
+                    except Exception as e:
+                        logger.error(f"CursorEventConsumer thread crashed: {e}", exc_info=True)
+
+                cursor_consumer_thread = threading.Thread(target=run_cursor_event_consumer, daemon=True)
+                cursor_consumer_thread.start()
+                self.monitor_threads.append(cursor_consumer_thread)
+                logger.info("CursorEventConsumer started")
 
             # Start metrics logging task (if Cursor monitoring enabled)
             if self.session_monitor:

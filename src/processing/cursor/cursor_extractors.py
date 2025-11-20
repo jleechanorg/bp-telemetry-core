@@ -29,41 +29,77 @@ class ComposerDataExtractor:
 
     def extract_composer_events(self, composer_data: dict, workspace_hash: str, external_session_id: str) -> List[dict]:
         """
-        Extract all events from a composer conversation.
-        Returns list of events: 1 composer event + N bubble events.
+        Extract all events from a composer conversation with complete hierarchy.
+        Returns list of events: 1 composer event + N bubble events + M capability events.
+
+        Handles:
+        - Top-level composer metadata
+        - All bubbles from conversation array
+        - Nested bubbles within bubbles (if any)
+        - All capabilities executed
+        - Timing, metrics, and context for each level
         """
         events = []
+        composer_id = composer_data.get("composerId")
 
         # Extract composer-level event
         composer_event = self._extract_composer_event(composer_data, workspace_hash, external_session_id)
         events.append(composer_event)
 
-        # Extract bubble events from conversation
+        # Extract bubble events from conversation (handles both full and header-only)
         conversation = (
             composer_data.get("conversation", []) or
-            composer_data.get("fullConversationHeadersOnly", [])
+            composer_data.get("fullConversationHeadersOnly", []) or
+            []
         )
 
-        for bubble in conversation:
+        for bubble_idx, bubble in enumerate(conversation):
+            if not isinstance(bubble, dict):
+                logger.warning(f"Invalid bubble at index {bubble_idx} in composer {composer_id}")
+                continue
+
             bubble_event = self._extract_bubble_event(
                 bubble,
-                composer_data.get("composerId"),
+                composer_id,
                 workspace_hash,
-                external_session_id
+                external_session_id,
+                bubble_idx
             )
             events.append(bubble_event)
 
+            # Check for nested bubbles (some bubbles may contain sub-bubbles)
+            nested_bubbles = bubble.get("nestedBubbles", []) or bubble.get("subBubbles", [])
+            for nested_idx, nested_bubble in enumerate(nested_bubbles):
+                if isinstance(nested_bubble, dict):
+                    nested_event = self._extract_bubble_event(
+                        nested_bubble,
+                        composer_id,
+                        workspace_hash,
+                        external_session_id,
+                        bubble_idx,
+                        parent_bubble_id=bubble.get("bubbleId"),
+                        is_nested=True
+                    )
+                    events.append(nested_event)
+
         # Extract capability events if present
         capabilities = composer_data.get("capabilitiesRan", {})
-        for cap_name, cap_data in capabilities.items():
-            cap_event = self._extract_capability_event(
-                cap_name,
-                cap_data,
-                composer_data.get("composerId"),
-                workspace_hash,
-                external_session_id
-            )
-            events.append(cap_event)
+        if capabilities and isinstance(capabilities, dict):
+            for cap_name, cap_data in capabilities.items():
+                if isinstance(cap_data, dict):
+                    cap_event = self._extract_capability_event(
+                        cap_name,
+                        cap_data,
+                        composer_id,
+                        workspace_hash,
+                        external_session_id
+                    )
+                    events.append(cap_event)
+
+        logger.debug(
+            f"Extracted {len(events)} events from composer {composer_id}: "
+            f"1 composer + {len(conversation)} bubbles + {len(capabilities)} capabilities"
+        )
 
         return events
 
@@ -108,23 +144,52 @@ class ComposerDataExtractor:
             "full_data": data,
         }
 
-    def _extract_bubble_event(self, bubble: dict, composer_id: str, workspace_hash: str, external_session_id: str) -> dict:
-        """Extract data from a single bubble."""
+    def _extract_bubble_event(
+        self,
+        bubble: dict,
+        composer_id: str,
+        workspace_hash: str,
+        external_session_id: str,
+        bubble_idx: int = 0,
+        parent_bubble_id: Optional[str] = None,
+        is_nested: bool = False
+    ) -> dict:
+        """
+        Extract data from a single bubble (including nested bubbles).
+
+        Args:
+            bubble: Bubble data dictionary
+            composer_id: Parent composer ID
+            workspace_hash: Workspace hash
+            external_session_id: Session ID
+            bubble_idx: Index in conversation array
+            parent_bubble_id: ID of parent bubble (for nested bubbles)
+            is_nested: Whether this is a nested bubble
+        """
         timing_info = bubble.get("timingInfo", {})
         bubble_id = bubble.get("bubbleId")
 
-        # Determine timestamp
+        # Determine timestamp (try multiple fields)
         client_start = timing_info.get("clientStartTime")
+        created_at = bubble.get("createdAt")
         timestamp = datetime.utcnow().isoformat()
+
         if client_start:
             try:
                 timestamp = datetime.fromtimestamp(client_start / 1000).isoformat()
             except:
                 pass
+        elif created_at:
+            try:
+                timestamp = datetime.fromtimestamp(created_at / 1000).isoformat()
+            except:
+                pass
+
+        event_type = "bubble" if not is_nested else "nested_bubble"
 
         return {
             "event_id": str(uuid.uuid4()),
-            "event_type": "bubble",
+            "event_type": event_type,
             "timestamp": timestamp,
             "external_session_id": external_session_id,
             "workspace_hash": workspace_hash,
@@ -132,21 +197,38 @@ class ComposerDataExtractor:
             "database_table": "cursorDiskKV",
             "item_key": f"composerData:{composer_id}",
 
-            # Bubble fields
+            # Hierarchy fields
             "composer_id": composer_id,
             "bubble_id": bubble_id,
             "server_bubble_id": bubble.get("serverBubbleId"),
+            "parent_bubble_id": parent_bubble_id,  # For nested bubbles
+            "bubble_index": bubble_idx,
+            "is_nested": is_nested,
+
+            # Message fields
             "message_type": bubble.get("type"),  # 1=user, 2=ai
             "text_description": bubble.get("text"),
             "raw_text": bubble.get("rawText"),
             "rich_text": json.dumps(bubble.get("richText")) if bubble.get("richText") else None,
+
+            # Capability execution
             "capabilities_ran": json.dumps(bubble.get("capabilitiesRan")) if bubble.get("capabilitiesRan") else None,
             "capability_statuses": json.dumps(bubble.get("capabilityStatuses")) if bubble.get("capabilityStatuses") else None,
+
+            # Metrics
             "token_count_up_until_here": bubble.get("tokenCountUpUntilHere"),
+            "lines_added": bubble.get("linesAdded"),
+            "lines_removed": bubble.get("linesRemoved"),
+
+            # Timing
             "client_start_time": timing_info.get("clientStartTime"),
             "client_end_time": timing_info.get("clientEndTime"),
+            "created_at": bubble.get("createdAt"),
+
+            # Context
             "relevant_files": json.dumps(bubble.get("relevantFiles")) if bubble.get("relevantFiles") else None,
             "selections": json.dumps(bubble.get("selections")) if bubble.get("selections") else None,
+            "codeblock_preview": bubble.get("codeblockPreview"),
 
             # Full data
             "full_data": bubble,

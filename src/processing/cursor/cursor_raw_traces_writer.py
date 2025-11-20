@@ -3,19 +3,156 @@
 # License-Filename: LICENSE
 
 """
-Writer for cursor_raw_traces table.
+Event queuer and writer for cursor_raw_traces.
 
-Handles batch writes with zlib compression for optimal performance.
+EventQueuer: Queues events to Redis Streams with at-least-once delivery
+CursorRawTracesWriter: Consumes from Redis and writes to cursor_raw_traces table
 """
 
+import asyncio
 import json
 import logging
+import time
 import zlib
-from typing import Dict, List
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import aiosqlite
+import redis
 
 from ..database.sqlite_client import SQLiteClient
 
 logger = logging.getLogger(__name__)
+
+
+class EventQueuer:
+    """
+    Queues all Cursor events to Redis stream for processing.
+    Ensures all telemetry flows through the message queue with at-least-once delivery.
+    """
+
+    def __init__(self, redis_client: redis.Redis):
+        self.redis_client = redis_client
+        self.stream_name = "telemetry:events"
+        self.max_stream_length = 10000
+        self.consumer_group = "processors"
+
+        # Ensure consumer group exists
+        self._ensure_consumer_group()
+
+    def _ensure_consumer_group(self):
+        """Create consumer group if it doesn't exist."""
+        try:
+            self.redis_client.xgroup_create(
+                self.stream_name,
+                self.consumer_group,
+                id='0',
+                mkstream=True
+            )
+            logger.info(f"Created consumer group '{self.consumer_group}'")
+        except redis.ResponseError as e:
+            if "BUSYGROUP" in str(e):
+                pass  # Group already exists
+            else:
+                raise
+
+    async def queue_event(self, event: dict) -> Optional[str]:
+        """
+        Queue single event to Redis stream.
+        Returns the stream entry ID on success.
+        """
+        try:
+            # Serialize nested structures
+            serialized = self._serialize_event(event)
+
+            # Add to stream with automatic ID
+            entry_id = self.redis_client.xadd(
+                self.stream_name,
+                serialized,
+                maxlen=self.max_stream_length,
+                approximate=True
+            )
+
+            logger.debug(f"Queued event {event.get('event_id')} as stream entry {entry_id}")
+            return entry_id
+
+        except Exception as e:
+            logger.error(f"Failed to queue event: {e}")
+            await self._buffer_locally(event)
+            return None
+
+    async def queue_events_batch(self, events: List[dict]) -> List[str]:
+        """
+        Queue multiple events efficiently.
+        Returns list of stream entry IDs.
+        """
+        if not events:
+            return []
+
+        pipeline = self.redis_client.pipeline()
+        entry_ids = []
+
+        for event in events:
+            serialized = self._serialize_event(event)
+            pipeline.xadd(
+                self.stream_name,
+                serialized,
+                maxlen=self.max_stream_length,
+                approximate=True
+            )
+
+        try:
+            entry_ids = pipeline.execute()
+            logger.debug(f"Queued batch of {len(events)} events")
+            return entry_ids
+        except Exception as e:
+            logger.error(f"Failed to queue batch: {e}")
+            # Fall back to individual queuing
+            for event in events:
+                entry_id = await self.queue_event(event)
+                if entry_id:
+                    entry_ids.append(entry_id)
+            return entry_ids
+
+    def _serialize_event(self, event: dict) -> dict:
+        """Serialize event for Redis."""
+        serialized = {}
+
+        for key, value in event.items():
+            if isinstance(value, (dict, list)):
+                serialized[key] = json.dumps(value)
+            elif isinstance(value, datetime):
+                serialized[key] = value.isoformat()
+            elif value is not None:
+                serialized[key] = str(value)
+            else:
+                serialized[key] = ""
+
+        return serialized
+
+    async def _buffer_locally(self, event: dict):
+        """Buffer events locally when Redis is unavailable."""
+        buffer_path = Path.home() / ".blueplane" / "cursor_event_buffer.db"
+        buffer_path.parent.mkdir(exist_ok=True)
+
+        async with aiosqlite.connect(str(buffer_path)) as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS buffered_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    event_data TEXT NOT NULL,
+                    retry_count INTEGER DEFAULT 0
+                )
+            """)
+
+            await conn.execute(
+                "INSERT INTO buffered_events (event_data) VALUES (?)",
+                (json.dumps(event),)
+            )
+            await conn.commit()
+
+        logger.info("Buffered event locally due to Redis unavailability")
 
 
 class CursorRawTracesWriter:
@@ -23,6 +160,7 @@ class CursorRawTracesWriter:
     Writes Cursor telemetry events to cursor_raw_traces table.
 
     Features:
+    - Consumes from Redis Streams with XACK
     - Batch writes for performance
     - zlib level 6 compression for event_data
     - Proper field extraction and mapping

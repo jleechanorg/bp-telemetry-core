@@ -32,7 +32,7 @@ from .cursor_extractors import (
     GenerationExtractor,
     PromptExtractor,
 )
-from .cursor_raw_traces_writer import CursorRawTracesWriter
+from .cursor_raw_traces_writer import EventQueuer, CursorRawTracesWriter
 from ..database.sqlite_client import SQLiteClient
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ class WorkspaceMonitor:
         redis_client: redis.Redis,
         config: CursorMonitorConfig,
         itemtable_keys: List[str],
-        writer: CursorRawTracesWriter,
+        event_queuer: EventQueuer,
         extractors: dict,
     ):
         self.workspace_hash = workspace_hash
@@ -70,7 +70,7 @@ class WorkspaceMonitor:
         self.redis_client = redis_client
         self.config = config
         self.itemtable_keys = itemtable_keys
-        self.writer = writer
+        self.event_queuer = event_queuer
         self.extractors = extractors
 
         self.connection: Optional[aiosqlite.Connection] = None
@@ -161,7 +161,7 @@ class WorkspaceMonitor:
                     self.workspace_hash,
                     external_session_id
                 )
-                await self.writer.write_event(event)
+                await self.event_queuer.queue_event(event)
 
         elif key == "aiService.prompts" and isinstance(data, list):
             # Get only new prompts
@@ -177,7 +177,7 @@ class WorkspaceMonitor:
                     self.workspace_hash,
                     external_session_id
                 )
-                await self.writer.write_event(event)
+                await self.event_queuer.queue_event(event)
 
         elif key == "workbench.backgroundComposer.workspacePersistentData":
             event = self.extractors['background_composer'].extract_background_composer(
@@ -185,7 +185,7 @@ class WorkspaceMonitor:
                 self.workspace_hash,
                 external_session_id
             )
-            await self.writer.write_event(event)
+            await self.event_queuer.queue_event(event)
 
         elif key == "workbench.agentMode.exitInfo":
             event = self.extractors['agent_mode'].extract_agent_mode(
@@ -193,7 +193,7 @@ class WorkspaceMonitor:
                 self.workspace_hash,
                 external_session_id
             )
-            await self.writer.write_event(event)
+            await self.event_queuer.queue_event(event)
 
     async def close(self):
         """Close database connection."""
@@ -216,12 +216,12 @@ class UserLevelListener:
         self,
         redis_client: redis.Redis,
         config: CursorMonitorConfig,
-        writer: CursorRawTracesWriter,
+        event_queuer: EventQueuer,
         extractors: dict,
     ):
         self.redis_client = redis_client
         self.config = config
-        self.writer = writer
+        self.event_queuer = event_queuer
         self.extractors = extractors
 
         self.db_path: Optional[Path] = None
@@ -357,7 +357,7 @@ class UserLevelListener:
             )
 
             for event in events:
-                await self.writer.write_event(event)
+                await self.event_queuer.queue_event(event)
 
         except Exception as e:
             logger.error(f"Error queuing composer events for {key}: {e}")
@@ -386,7 +386,7 @@ class UnifiedCursorMonitor:
         self.config = config or CursorMonitorConfig()
 
         # Initialize components
-        self.writer = CursorRawTracesWriter(sqlite_client, self.config.batch_size)
+        self.event_queuer = EventQueuer(redis_client)
 
         # Initialize extractors
         self.extractors = {
@@ -400,7 +400,7 @@ class UnifiedCursorMonitor:
         self.user_listener = UserLevelListener(
             redis_client,
             self.config,
-            self.writer,
+            self.event_queuer,
             self.extractors
         )
 
@@ -461,9 +461,6 @@ class UnifiedCursorMonitor:
         for workspace_hash in list(self.workspace_monitors.keys()):
             await self.on_session_end(workspace_hash)
 
-        # Flush any pending writes
-        await self.writer.flush()
-
         logger.info("UnifiedCursorMonitor stopped")
 
     async def on_session_start(self, workspace_hash: str, session_info: dict):
@@ -490,7 +487,7 @@ class UnifiedCursorMonitor:
             redis_client=self.redis_client,
             config=self.config,
             itemtable_keys=self.workspace_itemtable_keys,
-            writer=self.writer,
+            event_queuer=self.event_queuer,
             extractors=self.extractors,
         )
         await monitor.start()
@@ -591,9 +588,6 @@ class UnifiedCursorMonitor:
 
                 # Cleanup expired cache entries
                 await self.smart_cache.cleanup_expired()
-
-                # Flush any pending writes
-                await self.writer.flush()
 
             except Exception as e:
                 logger.error(f"Monitoring loop error: {e}")
