@@ -26,6 +26,8 @@ from .cursor.session_monitor import SessionMonitor
 from .cursor.database_monitor import CursorDatabaseMonitor
 from .cursor.markdown_monitor import CursorMarkdownMonitor
 from .cursor.unified_cursor_monitor import UnifiedCursorMonitor, CursorMonitorConfig
+from .cursor.event_consumer import CursorEventProcessor
+from .cursor.raw_traces_writer import CursorRawTracesWriter
 from .cursor.session_timeout import CursorSessionTimeoutManager
 from .cursor.metrics import get_metrics
 from .claude_code.transcript_monitor import ClaudeCodeTranscriptMonitor
@@ -69,6 +71,8 @@ class TelemetryServer:
         self.cursor_monitor: Optional[CursorDatabaseMonitor] = None
         self.markdown_monitor: Optional[CursorMarkdownMonitor] = None
         self.unified_cursor_monitor: Optional[UnifiedCursorMonitor] = None
+        self.cursor_event_processor: Optional[CursorEventProcessor] = None
+        self.cursor_raw_traces_writer: Optional[CursorRawTracesWriter] = None
         self.claude_code_monitor: Optional[ClaudeCodeTranscriptMonitor] = None
         self.claude_session_monitor: Optional[ClaudeCodeSessionMonitor] = None
         self.claude_jsonl_monitor: Optional[ClaudeCodeJSONLMonitor] = None
@@ -292,11 +296,22 @@ class TelemetryServer:
             config=monitor_config
         )
 
+        # Create cursor raw traces writer
+        self.cursor_raw_traces_writer = CursorRawTracesWriter(self.sqlite_client)
+
+        # Create event processor (consumer with ACK support)
+        self.cursor_event_processor = CursorEventProcessor(
+            redis_client=self.redis_client,
+            db_writer=self.cursor_raw_traces_writer,
+            pending_check_interval=unified_config.get("pending_check_interval", 30)
+        )
+
         logger.info(
             f"Unified Cursor monitor initialized "
             f"(debounce={monitor_config.debounce_delay}s, "
             f"poll_fallback={monitor_config.poll_interval}s, "
-            f"cache_ttl={monitor_config.cache_ttl}s)"
+            f"cache_ttl={monitor_config.cache_ttl}s, "
+            f"pending_check={unified_config.get('pending_check_interval', 30)}s)"
         )
 
     def _initialize_claude_code_monitor(self) -> None:
@@ -461,10 +476,29 @@ class TelemetryServer:
                     except Exception as e:
                         logger.error(f"Unified Cursor monitor thread crashed: {e}", exc_info=True)
 
+                def run_cursor_event_processor():
+                    import asyncio
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(self.cursor_event_processor.start())
+                        # Keep running
+                        while True:
+                            loop.run_until_complete(asyncio.sleep(1))
+                    except Exception as e:
+                        logger.error(f"Cursor event processor thread crashed: {e}", exc_info=True)
+
                 unified_thread = threading.Thread(target=run_unified_cursor_monitor, daemon=True)
                 unified_thread.start()
                 self.monitor_threads.append(unified_thread)
                 logger.info("Unified Cursor monitor started")
+
+                processor_thread = threading.Thread(target=run_cursor_event_processor, daemon=True)
+                processor_thread.start()
+                self.monitor_threads.append(processor_thread)
+                logger.info("Cursor event processor started")
 
             # Start Claude Code monitors (if enabled)
             if self.claude_session_monitor and self.claude_jsonl_monitor:

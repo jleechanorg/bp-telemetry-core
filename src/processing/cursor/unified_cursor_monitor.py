@@ -28,6 +28,13 @@ import redis
 
 from .session_monitor import SessionMonitor
 from .workspace_mapper import WorkspaceMapper
+from .data_extractors import (
+    ComposerDataExtractor,
+    BackgroundComposerExtractor,
+    AgentModeExtractor,
+    GenerationExtractor,
+    PromptExtractor
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,10 +54,12 @@ class IncrementalSync:
     """
     Tracks processed data to avoid reprocessing.
     Uses content hash and timestamp for change detection.
+    Handles timestamped arrays properly.
     """
 
     def __init__(self):
         self.state: Dict[str, Dict[str, Any]] = {}
+        self.last_timestamps: Dict[str, int] = {}  # For timestamped arrays
 
     def should_process(
         self,
@@ -73,7 +82,14 @@ class IncrementalSync:
         """
         state_key = f"{storage_level}:{workspace_hash}:{key}"
 
-        # Compute hash of data
+        # For timestamped array data (generations, prompts)
+        if isinstance(data, list) and key in (
+            "aiService.generations",
+            "aiService.prompts"
+        ):
+            return self._check_timestamped_array(state_key, data)
+
+        # For non-timestamped data, use content hash
         data_str = json.dumps(data, sort_keys=True) if isinstance(data, dict) else str(data)
         data_hash = hashlib.sha256(data_str.encode()).hexdigest()[:16]
 
@@ -91,14 +107,68 @@ class IncrementalSync:
 
         return False
 
+    def _check_timestamped_array(self, state_key: str, data: list) -> bool:
+        """Check timestamped array for new items."""
+        if not data:
+            return False
+
+        last_ts = self.last_timestamps.get(state_key, 0)
+        max_ts = last_ts
+
+        # Check if there are any new items
+        has_new = False
+        for item in data:
+            if isinstance(item, dict):
+                item_ts = item.get("unixMs", 0)
+                if item_ts > last_ts:
+                    has_new = True
+                    max_ts = max(max_ts, item_ts)
+
+        if has_new:
+            self.last_timestamps[state_key] = max_ts
+            return True
+
+        return False
+
+    def get_new_items(
+        self,
+        storage_level: str,
+        workspace_hash: str,
+        key: str,
+        data: list
+    ) -> list:
+        """Get only new items from timestamped array."""
+        state_key = f"{storage_level}:{workspace_hash}:{key}"
+        last_ts = self.last_timestamps.get(state_key, 0)
+
+        new_items = []
+        max_ts = last_ts
+
+        for item in data:
+            if isinstance(item, dict):
+                item_ts = item.get("unixMs", 0)
+                if item_ts > last_ts:
+                    new_items.append(item)
+                    max_ts = max(max_ts, item_ts)
+
+        if new_items:
+            self.last_timestamps[state_key] = max_ts
+
+        return new_items
+
     def clear(self, workspace_hash: Optional[str] = None):
         """Clear state for a workspace or all."""
         if workspace_hash:
             keys_to_remove = [k for k in self.state if workspace_hash in k]
             for key in keys_to_remove:
                 del self.state[key]
+
+            keys_to_remove = [k for k in self.last_timestamps if workspace_hash in k]
+            for key in keys_to_remove:
+                del self.last_timestamps[key]
         else:
             self.state.clear()
+            self.last_timestamps.clear()
 
 
 class SmartCache:
@@ -264,6 +334,7 @@ class EventQueuer:
     """
     Queues all events to Redis stream for processing.
     Ensures all telemetry flows through the message queue.
+    Includes local buffering when Redis is unavailable.
     """
 
     def __init__(self, redis_client: redis.Redis):
@@ -275,32 +346,79 @@ class EventQueuer:
     async def queue_event(self, event: dict):
         """
         Queue event to Redis stream.
+        Falls back to local buffering if Redis is unavailable.
 
         Args:
             event: Event dictionary to queue
         """
         try:
-            # Serialize event to JSON
-            event_json = json.dumps(event)
+            # Serialize nested structures
+            serialized = self._serialize_event(event)
 
             # Add to stream with MAXLEN for memory management
             self.redis_client.xadd(
                 self.stream_name,
-                {"data": event_json},
+                serialized,
                 maxlen=self.max_stream_length,
                 approximate=True
             )
 
             logger.debug(f"Queued event {event.get('event_type')} to {self.stream_name}")
 
+        except redis.ConnectionError as e:
+            logger.error(f"Redis connection lost, buffering locally: {e}")
+            await self._buffer_locally(event)
         except Exception as e:
             logger.error(f"Failed to queue event: {e}")
+            await self._buffer_locally(event)
+
+    def _serialize_event(self, event: dict) -> dict:
+        """Serialize event for Redis."""
+        serialized = {}
+
+        for key, value in event.items():
+            if isinstance(value, (dict, list)):
+                serialized[key] = json.dumps(value)
+            elif isinstance(value, datetime):
+                serialized[key] = value.isoformat()
+            elif value is not None:
+                serialized[key] = str(value)
+            else:
+                serialized[key] = ""
+
+        return serialized
+
+    async def _buffer_locally(self, event: dict):
+        """Buffer events locally when Redis is unavailable."""
+        buffer_path = Path.home() / ".blueplane" / "event_buffer.db"
+        buffer_path.parent.mkdir(exist_ok=True, parents=True)
+
+        try:
+            async with aiosqlite.connect(str(buffer_path)) as conn:
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS buffered_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        event_data TEXT NOT NULL,
+                        retry_count INTEGER DEFAULT 0
+                    )
+                """)
+
+                await conn.execute(
+                    "INSERT INTO buffered_events (event_data) VALUES (?)",
+                    (json.dumps(event),)
+                )
+                await conn.commit()
+                logger.info("Event buffered locally")
+        except Exception as e:
+            logger.error(f"Failed to buffer event locally: {e}")
 
 
 class WorkspaceMonitor:
     """
     Monitors a single workspace database.
     Tracks specific ItemTable keys for AI telemetry.
+    Uses data extractors for comprehensive event capture.
     """
 
     def __init__(
@@ -320,6 +438,13 @@ class WorkspaceMonitor:
         self.connection = None
         self.event_queuer = EventQueuer(redis_client)
         self.incremental_sync = IncrementalSync()
+
+        # Initialize data extractors
+        self.composer_extractor = ComposerDataExtractor()
+        self.background_composer_extractor = BackgroundComposerExtractor()
+        self.agent_mode_extractor = AgentModeExtractor()
+        self.generation_extractor = GenerationExtractor()
+        self.prompt_extractor = PromptExtractor()
 
     async def connect(self):
         """Connect to workspace database."""
@@ -349,71 +474,124 @@ class WorkspaceMonitor:
             if row and row["value"]:
                 value = row["value"]
 
-                # Check if changed
+                # Parse JSON value
+                data = json.loads(value) if isinstance(value, str) else value
+
+                # Check if changed using incremental sync
                 if self.incremental_sync.should_process(
                     "workspace",
                     self.workspace_hash,
                     key,
-                    value
+                    data
                 ):
-                    await self._queue_itemtable_event(key, value)
+                    await self._extract_and_queue_events(key, data)
 
         except Exception as e:
             logger.error(f"Error syncing key {key}: {e}")
 
-    async def _queue_itemtable_event(self, key: str, value: str):
-        """Queue ItemTable event to Redis."""
+    async def _extract_and_queue_events(self, key: str, data: Any):
+        """Extract and queue events based on data type."""
         try:
-            # Parse JSON value
-            data = json.loads(value) if isinstance(value, str) else value
+            events = []
 
-            event = {
-                "version": "0.1.0",
-                "hook_type": "DatabaseTrace",
-                "event_type": self._determine_event_type(key, data),
-                "event_id": str(uuid.uuid4()),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "metadata": {
-                    "storage_level": "workspace",
-                    "database_table": "ItemTable",
-                    "item_key": key,
-                    "workspace_hash": self.workspace_hash,
-                    "source": "workspace_monitor",
-                },
-                "payload": {
-                    "extracted_fields": self._extract_fields(key, data),
-                    "full_data": data
+            # Handle different data types with appropriate extractors
+            if key == "aiService.generations" and isinstance(data, list):
+                # For timestamped arrays, only get new items
+                new_items = self.incremental_sync.get_new_items(
+                    "workspace",
+                    self.workspace_hash,
+                    key,
+                    data
+                )
+                if new_items:
+                    events = self.generation_extractor.extract_generations(
+                        new_items,
+                        self.workspace_hash,
+                        "workspace",
+                        "ItemTable",
+                        key
+                    )
+
+            elif key == "aiService.prompts" and isinstance(data, list):
+                # For timestamped arrays, only get new items
+                new_items = self.incremental_sync.get_new_items(
+                    "workspace",
+                    self.workspace_hash,
+                    key,
+                    data
+                )
+                if new_items:
+                    events = self.prompt_extractor.extract_prompts(
+                        new_items,
+                        self.workspace_hash,
+                        "workspace",
+                        "ItemTable",
+                        key
+                    )
+
+            elif key == "composer.composerData":
+                # Extract composer with nested bubbles
+                events = self.composer_extractor.extract_composer_events(
+                    data,
+                    self.workspace_hash,
+                    "workspace",
+                    "ItemTable",
+                    key
+                )
+
+            elif key == "workbench.backgroundComposer.workspacePersistentData":
+                # Extract background composer
+                event = self.background_composer_extractor.extract_background_composer(
+                    data,
+                    self.workspace_hash,
+                    "workspace",
+                    "ItemTable",
+                    key
+                )
+                events = [event]
+
+            elif key == "workbench.agentMode.exitInfo":
+                # Extract agent mode
+                event = self.agent_mode_extractor.extract_agent_mode(
+                    data,
+                    self.workspace_hash,
+                    "workspace",
+                    "ItemTable",
+                    key
+                )
+                events = [event]
+
+            else:
+                # Generic event for other keys
+                event = {
+                    "version": "0.1.0",
+                    "hook_type": "DatabaseTrace",
+                    "event_type": "other",
+                    "event_id": str(uuid.uuid4()),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "metadata": {
+                        "storage_level": "workspace",
+                        "database_table": "ItemTable",
+                        "item_key": key,
+                        "workspace_hash": self.workspace_hash,
+                        "source": "workspace_monitor",
+                    },
+                    "payload": {
+                        "extracted_fields": {},
+                        "full_data": data
+                    }
                 }
-            }
+                events = [event]
 
-            await self.event_queuer.queue_event(event)
+            # Queue all extracted events
+            for event in events:
+                await self.event_queuer.queue_event(event)
+
+            if events:
+                logger.info(f"Queued {len(events)} events for {key}")
 
         except Exception as e:
-            logger.error(f"Error queuing ItemTable event: {e}")
-
-    def _determine_event_type(self, key: str, data: Any) -> str:
-        """Determine event type from key and data."""
-        if "generation" in key.lower():
-            return "generation"
-        elif "prompt" in key.lower():
-            return "prompt"
-        elif "composer" in key.lower():
-            return "composer"
-        elif "session" in key.lower():
-            return "session"
-        return "other"
-
-    def _extract_fields(self, key: str, data: Any) -> dict:
-        """Extract relevant fields from data."""
-        fields = {}
-
-        if isinstance(data, dict):
-            # Extract common fields
-            for field in ["uuid", "generationUUID", "composerId", "timestamp", "unixMs"]:
-                if field in data:
-                    fields[field] = data[field]
-
-        return fields
+            logger.error(f"Error extracting and queuing events for {key}: {e}")
 
     async def close(self):
         """Close database connection."""
@@ -564,13 +742,15 @@ class UserLevelListener:
 
     def _extract_composer_fields(self, data: dict) -> dict:
         """Extract relevant fields from composer data."""
-        fields = {}
-
-        for field in ["composerId", "workspaceId", "createdAt", "lastUpdatedAt"]:
-            if field in data:
-                fields[field] = data[field]
-
-        return fields
+        # Use the extractor to get comprehensive composer events
+        extractor = ComposerDataExtractor()
+        # We'll queue the full events, not just fields
+        return {
+            "composerId": data.get("composerId"),
+            "workspaceId": data.get("workspaceId"),
+            "createdAt": data.get("createdAt"),
+            "lastUpdatedAt": data.get("lastUpdatedAt"),
+        }
 
     def set_active_workspaces(self, workspaces: Set[str]):
         """Update set of active workspaces."""
