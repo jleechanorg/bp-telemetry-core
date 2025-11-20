@@ -296,7 +296,7 @@ class SessionPersistence:
             with self.sqlite_client.get_connection() as conn:
                 cursor = conn.execute("""
                     SELECT
-                        session_id, workspace_hash, workspace_name, context, metadata, started_at
+                        external_id, workspace_hash, workspace_name, context, metadata, started_at
                     FROM conversations
                     WHERE platform = 'claude_code' AND ended_at IS NULL
                     ORDER BY started_at DESC
@@ -306,7 +306,13 @@ class SessionPersistence:
                 recovered = {}
                 
                 for row in rows:
-                    session_id = row[0]
+                    session_id = row[0]  # external_id for Claude Code
+                    
+                    # Skip if session_id is None or empty (shouldn't happen, but safety check)
+                    if not session_id:
+                        logger.warning(f"Skipping recovered session with None/empty external_id")
+                        continue
+                    
                     workspace_hash = row[1]
                     workspace_name = row[2] or ''
                     context_str = row[3] or '{}'

@@ -290,7 +290,7 @@ def create_claude_raw_traces_table(client: SQLiteClient) -> None:
 
         -- Event identification (indexed)
         event_id TEXT NOT NULL,
-        session_id TEXT NOT NULL,
+        external_id TEXT NOT NULL,
         event_type TEXT NOT NULL,
         platform TEXT NOT NULL DEFAULT 'claude_code',
         timestamp TIMESTAMP NOT NULL,
@@ -353,6 +353,37 @@ def create_claude_raw_traces_table(client: SQLiteClient) -> None:
     );
     """
     client.execute(sql)
+    
+    # Migrate existing table: rename session_id to external_id if needed
+    with client.get_connection() as conn:
+        cursor = conn.execute("PRAGMA table_info(claude_raw_traces)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if 'session_id' in columns and 'external_id' not in columns:
+            logger.info("Migrating claude_raw_traces: session_id -> external_id")
+            try:
+                # SQLite 3.25.0+ supports RENAME COLUMN
+                conn.execute("ALTER TABLE claude_raw_traces RENAME COLUMN session_id TO external_id")
+                
+                # Drop old indexes that reference session_id
+                conn.execute("DROP INDEX IF EXISTS idx_claude_session_time")
+                conn.execute("DROP INDEX IF EXISTS idx_claude_sidechain")
+                
+                # Recreate indexes with external_id
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_claude_session_time ON claude_raw_traces(external_id, timestamp);")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_claude_sidechain ON claude_raw_traces(is_sidechain, external_id);")
+                
+                conn.commit()
+                logger.info("Migration complete: claude_raw_traces.session_id -> external_id")
+            except Exception as e:
+                # If RENAME COLUMN is not supported, log warning
+                logger.warning(
+                    f"Could not migrate claude_raw_traces.session_id to external_id: {e}. "
+                    f"SQLite 3.25.0+ required for RENAME COLUMN. "
+                    f"Please recreate the table or upgrade SQLite."
+                )
+                conn.rollback()
+    
     logger.info("Created claude_raw_traces table")
 
 
@@ -390,7 +421,7 @@ def create_claude_indexes(client: SQLiteClient) -> None:
     """
     indexes = [
         # Primary query patterns
-        "CREATE INDEX IF NOT EXISTS idx_claude_session_time ON claude_raw_traces(session_id, timestamp);",
+        "CREATE INDEX IF NOT EXISTS idx_claude_session_time ON claude_raw_traces(external_id, timestamp);",
         "CREATE INDEX IF NOT EXISTS idx_claude_event_type_time ON claude_raw_traces(event_type, timestamp);",
         "CREATE INDEX IF NOT EXISTS idx_claude_project_name ON claude_raw_traces(project_name);",
 
@@ -410,7 +441,7 @@ def create_claude_indexes(client: SQLiteClient) -> None:
 
         # Agent tracking
         "CREATE INDEX IF NOT EXISTS idx_claude_agent_id ON claude_raw_traces(agent_id);",
-        "CREATE INDEX IF NOT EXISTS idx_claude_sidechain ON claude_raw_traces(is_sidechain, session_id);",
+        "CREATE INDEX IF NOT EXISTS idx_claude_sidechain ON claude_raw_traces(is_sidechain, external_id);",
     ]
 
     for index_sql in indexes:

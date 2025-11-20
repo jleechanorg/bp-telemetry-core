@@ -137,6 +137,10 @@ class ClaudeCodeJSONLMonitor:
 
                 # Monitor each active session
                 for session_id, session_info in active_sessions.items():
+                    # Skip sessions with None session_id (shouldn't happen, but safety check)
+                    if not session_id:
+                        logger.warning(f"Skipping session with None session_id: {session_info}")
+                        continue
                     await self._monitor_session(session_id, session_info)
 
                 # Clean up inactive sessions

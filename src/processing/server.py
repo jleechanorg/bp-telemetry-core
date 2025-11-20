@@ -401,21 +401,36 @@ class TelemetryServer:
             if self.claude_session_monitor and self.claude_jsonl_monitor:
                 def run_claude_session_monitor():
                     import asyncio
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(self.claude_session_monitor.start())
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(self.claude_session_monitor.start())
+                    except Exception as e:
+                        logger.error(f"Claude Code session monitor thread crashed: {e}", exc_info=True)
 
                 def run_claude_jsonl_monitor():
                     import asyncio
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(self.claude_jsonl_monitor.start())
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(self.claude_jsonl_monitor.start())
+                    except Exception as e:
+                        logger.error(f"Claude Code JSONL monitor thread crashed: {e}", exc_info=True)
                 
                 def run_claude_timeout_manager():
                     import asyncio
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(self.claude_timeout_manager.start())
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(self.claude_timeout_manager.start())
+                    except Exception as e:
+                        logger.error(f"Claude Code timeout manager thread crashed: {e}", exc_info=True)
 
                 claude_session_thread = threading.Thread(target=run_claude_session_monitor, daemon=True)
                 claude_jsonl_thread = threading.Thread(target=run_claude_jsonl_monitor, daemon=True)

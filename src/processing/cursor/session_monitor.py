@@ -37,23 +37,33 @@ class SessionMonitor:
     - Recovers incomplete sessions on startup
     """
 
-    def __init__(self, redis_client: redis.Redis, sqlite_client: Optional[SQLiteClient] = None):
+    def __init__(
+        self,
+        redis_client: redis.Redis,
+        sqlite_client: Optional[SQLiteClient] = None,
+        stream_name: str = "telemetry:events",
+        consumer_group: str = "session_monitors",
+        consumer_name: str = "cursor_session_monitor",
+    ):
         """
         Initialize Cursor session monitor.
 
         Args:
             redis_client: Redis client for event streaming
             sqlite_client: Optional SQLite client for persistence (if None, persistence disabled)
+            stream_name: Redis stream name to read from
+            consumer_group: Consumer group name for Redis streams
+            consumer_name: Consumer name (unique per instance)
         """
         self.redis_client = redis_client
         self.sqlite_client = sqlite_client
+        self.stream_name = stream_name
+        self.consumer_group = consumer_group
+        self.consumer_name = consumer_name
 
         # Active sessions: workspace_hash -> session_info (in-memory for fast lookups)
         self.active_sessions: Dict[str, dict] = {}
         self._lock = threading.Lock()
-
-        # Track last processed Redis message ID (for resuming)
-        self.last_redis_id = "0-0"
 
         # Session persistence (if sqlite_client provided)
         self.persistence: Optional[CursorSessionPersistence] = None
@@ -67,23 +77,27 @@ class SessionMonitor:
         Start monitoring sessions with recovery.
         
         Steps:
-        1. Recover incomplete sessions from database (if persistence enabled)
-        2. Catch up on historical Redis events
-        3. Start listening to new Redis events
+        1. Ensure consumer group exists
+        2. Recover incomplete sessions from database (if persistence enabled)
+        3. Process pending messages (from previous runs)
+        4. Start listening to new Redis events
         """
         self.running = True
 
-        # Step 1: Recover incomplete sessions from last run (if persistence enabled)
+        # Step 1: Ensure consumer group exists
+        self._ensure_consumer_group()
+
+        # Step 2: Recover incomplete sessions from last run (if persistence enabled)
         if self.persistence:
             await self._recover_active_sessions()
 
-        # Step 2: Process historical events first (catch up on existing sessions)
-        await self._catch_up_historical_events()
+        # Step 3: Process pending messages first (catch up on unprocessed messages)
+        await self._process_pending_messages()
 
         persistence_status = "with database persistence" if self.persistence else "(in-memory only)"
         logger.info(f"Cursor session monitor started {persistence_status}")
 
-        # Step 3: Run Redis event listener directly (blocks until stopped)
+        # Step 4: Run Redis event listener directly (blocks until stopped)
         await self._listen_redis_events()
 
     async def _recover_active_sessions(self):
@@ -102,25 +116,121 @@ class SessionMonitor:
         except Exception as e:
             logger.error(f"Failed to recover active sessions: {e}", exc_info=True)
 
-    async def _catch_up_historical_events(self):
-        """Process all historical session_start events from Redis."""
+    def _ensure_consumer_group(self) -> None:
+        """Ensure consumer group exists, create if not."""
         try:
-            # Read all historical events
-            messages = self.redis_client.xread(
-                {"telemetry:events": "0-0"},
-                count=1000,
-                block=0  # Non-blocking
+            self.redis_client.xgroup_create(
+                self.stream_name,
+                self.consumer_group,
+                id='0',
+                mkstream=True
             )
+            logger.info(f"Created consumer group: {self.consumer_group}")
+        except redis.exceptions.ResponseError as e:
+            if "BUSYGROUP" not in str(e):
+                logger.error(f"Failed to create consumer group: {e}")
+                raise
+            logger.debug(f"Consumer group already exists: {self.consumer_group}")
 
-            if messages:
+    async def _process_pending_messages(self):
+        """Process pending messages from previous runs (messages in PEL)."""
+        try:
+            total_cursor_events = 0
+            total_acked = 0
+            total_messages_read = 0
+            empty_reads = 0
+            max_empty_reads = 3  # Stop after 3 consecutive empty reads
+
+            while True:
+                # Read pending messages assigned to this consumer (using "0")
+                messages = self.redis_client.xreadgroup(
+                    groupname=self.consumer_group,
+                    consumername=self.consumer_name,
+                    streams={self.stream_name: "0"},  # "0" means read from PEL
+                    count=100,
+                    block=0  # Non-blocking
+                )
+
+                if not messages:
+                    empty_reads += 1
+                    if empty_reads >= max_empty_reads:
+                        break
+                    await asyncio.sleep(0.1)  # Small delay before next read
+                    continue
+                
+                empty_reads = 0  # Reset counter on successful read
+
+                batch_cursor_events = 0
+                batch_acked = 0
+                batch_messages = 0
                 for stream, msgs in messages:
                     for msg_id, fields in msgs:
-                        await self._process_redis_message(msg_id, fields)
-                        self.last_redis_id = msg_id.decode() if isinstance(msg_id, bytes) else str(msg_id)
+                        batch_messages += 1
+                        total_messages_read += 1
+                        
+                        # Decode message_id
+                        msg_id_str = msg_id.decode('utf-8') if isinstance(msg_id, bytes) else str(msg_id)
+                        
+                        # Check if this is a Cursor event before processing
+                        event_type = self._decode_field(fields, 'event_type')
+                        platform = self._decode_field(fields, 'platform')
+                        is_cursor_event = (
+                            platform == 'cursor' and 
+                            event_type in ('session_start', 'session_end')
+                        )
+                        
+                        try:
+                            # Process message (will ACK filtered messages too)
+                            success = await self._process_redis_message(msg_id_str, fields)
+                            
+                            if is_cursor_event:
+                                batch_cursor_events += 1
+                                total_cursor_events += 1
+                            
+                            # ACK if successfully processed (including filtered messages)
+                            # Errors will remain in PEL for retry
+                            if success:
+                                try:
+                                    self.redis_client.xack(
+                                        self.stream_name,
+                                        self.consumer_group,
+                                        msg_id_str
+                                    )
+                                    batch_acked += 1
+                                    total_acked += 1
+                                except Exception as e:
+                                    logger.error(f"Failed to ACK message {msg_id_str}: {e}")
+                            # If success is False, it's an error - don't ACK, let it retry
+                        except Exception as e:
+                            logger.error(
+                                f"Exception processing pending message {msg_id_str}: {e}",
+                                exc_info=True
+                            )
+                            # Don't ACK on exception - let it retry
 
-                logger.info(f"Processed {len(msgs)} historical events")
+                # Only log if we processed Cursor events
+                if batch_cursor_events > 0:
+                    logger.info(
+                        f"Processed {batch_cursor_events} pending Cursor events "
+                        f"(ACKed {batch_acked}, total processed: {total_cursor_events})"
+                    )
+                await asyncio.sleep(0)  # Yield control during long catch-up
+
+            if total_cursor_events == 0:
+                if total_messages_read > 0:
+                    logger.debug(
+                        f"No pending Cursor events to process "
+                        f"(read {total_messages_read} messages from other platforms)"
+                    )
+                else:
+                    logger.info("No pending Cursor events to process")
+            else:
+                logger.info(
+                    f"Finished processing pending messages: {total_cursor_events} Cursor events "
+                    f"processed, {total_acked} ACKed"
+                )
         except Exception as e:
-            logger.warning(f"Error catching up historical events: {e}")
+            logger.warning(f"Error processing pending messages: {e}", exc_info=True)
 
     async def stop(self):
         """Stop monitoring."""
@@ -129,16 +239,19 @@ class SessionMonitor:
 
     async def _listen_redis_events(self):
         """
-        Listen to session_start/end events from Redis stream.
+        Listen to session_start/end events from Redis stream using consumer groups.
 
-        Reads from telemetry:events stream, filters for session events.
+        Reads from telemetry:events stream, filters for Cursor session events.
+        ACKs messages after successful processing.
         """
         try:
             while self.running:
                 try:
-                    # Read from stream (non-blocking, 1 second timeout)
-                    messages = self.redis_client.xread(
-                        {"telemetry:events": self.last_redis_id},
+                    # Read from stream using consumer group (">" means new messages)
+                    messages = self.redis_client.xreadgroup(
+                        groupname=self.consumer_group,
+                        consumername=self.consumer_name,
+                        streams={self.stream_name: ">"},  # ">" means new messages
                         count=100,
                         block=1000  # 1 second block
                     )
@@ -150,21 +263,50 @@ class SessionMonitor:
                     # Process messages
                     for stream, msgs in messages:
                         for msg_id, fields in msgs:
-                            await self._process_redis_message(msg_id, fields)
-                            self.last_redis_id = msg_id.decode() if isinstance(msg_id, bytes) else str(msg_id)
+                            # Decode message_id
+                            msg_id_str = msg_id.decode('utf-8') if isinstance(msg_id, bytes) else str(msg_id)
+                            
+                            try:
+                                # Process message
+                                success = await self._process_redis_message(msg_id_str, fields)
+                                
+                                if success:
+                                    # ACK successful processing (includes filtered messages)
+                                    try:
+                                        self.redis_client.xack(
+                                            self.stream_name,
+                                            self.consumer_group,
+                                            msg_id_str
+                                        )
+                                    except Exception as e:
+                                        logger.error(f"Failed to ACK message {msg_id_str}: {e}")
+                                # If success is False, it's an error - don't ACK, let it retry via PEL
+                            except Exception as e:
+                                logger.error(
+                                    f"Error processing message {msg_id_str}: {e}",
+                                    exc_info=True
+                                )
+                                # Don't ACK on exception - let it retry via PEL
+                                # In production, you might want to implement retry limits and DLQ
 
-                except redis.ConnectionError:
-                    logger.warning("Redis connection lost, retrying...")
+                except redis.exceptions.RedisError as e:
+                    logger.error(f"Redis error in session monitor: {e}")
                     await asyncio.sleep(5)
-                except Exception as e:
-                    logger.error(f"Error reading Redis events: {e}")
-                    await asyncio.sleep(1)
 
         except Exception as e:
-            logger.error(f"Redis event listener failed: {e}")
+            logger.error(f"Fatal error in session monitor: {e}")
 
-    async def _process_redis_message(self, msg_id, fields: dict):
-        """Process a Redis message and update session state."""
+    async def _process_redis_message(self, msg_id: str, fields: dict) -> bool:
+        """
+        Process a Redis message and update session state.
+        
+        Args:
+            msg_id: Redis message ID (string)
+            fields: Redis stream fields dictionary
+            
+        Returns:
+            True if message was processed (or should be ACKed), False if error occurred
+        """
         try:
             # Decode fields
             event_type = self._decode_field(fields, 'event_type')
@@ -173,11 +315,11 @@ class SessionMonitor:
 
             # Only process Cursor session events
             if platform != 'cursor':
-                return
+                return True  # Filtered out - ACK to prevent reprocessing
 
             # Only process session events
             if event_type not in ('session_start', 'session_end'):
-                return
+                return True  # Filtered out - ACK to prevent reprocessing
 
             # Parse payload
             payload_str = self._decode_field(fields, 'payload')
@@ -199,7 +341,7 @@ class SessionMonitor:
 
             if not workspace_hash or not session_id:
                 logger.debug(f"Incomplete session event: {msg_id}")
-                return
+                return True  # ACK to prevent reprocessing
 
             if event_type == 'session_start':
                 # Extract workspace_name from metadata if available
@@ -242,6 +384,7 @@ class SessionMonitor:
                     self.active_sessions[workspace_hash] = session_info
                 
                 logger.info(f"Cursor session started: {workspace_hash} -> {session_id}")
+                return True  # Successfully processed
 
             elif event_type == 'session_end':
                 # Update database first (ensure durability)
@@ -265,9 +408,13 @@ class SessionMonitor:
                         logger.info(f"Cursor session ended: {workspace_hash}")
                     else:
                         logger.debug(f"Session end for unknown workspace: {workspace_hash}")
+                return True  # Successfully processed
 
+            return False  # Unknown event type
         except Exception as e:
-            logger.error(f"Error processing Redis message {msg_id}: {e}")
+            logger.error(f"Error processing Redis message {msg_id}: {e}", exc_info=True)
+            # Return False to prevent ACK, allowing retry via PEL
+            return False
 
     def _decode_field(self, fields: dict, key: str) -> str:
         """Decode a field from Redis message."""
