@@ -27,6 +27,7 @@ from .cursor.database_monitor import CursorDatabaseMonitor
 from .cursor.markdown_monitor import CursorMarkdownMonitor
 from .cursor.session_timeout import CursorSessionTimeoutManager
 from .cursor.metrics import get_metrics
+from .cursor.unified_cursor_monitor import UnifiedCursorMonitor, CursorMonitorConfig
 from .claude_code.transcript_monitor import ClaudeCodeTranscriptMonitor
 from .claude_code.session_monitor import ClaudeCodeSessionMonitor
 from .claude_code.jsonl_monitor import ClaudeCodeJSONLMonitor
@@ -66,6 +67,7 @@ class TelemetryServer:
         self.session_monitor: Optional[SessionMonitor] = None
         self.cursor_timeout_manager: Optional[CursorSessionTimeoutManager] = None
         self.cursor_monitor: Optional[CursorDatabaseMonitor] = None
+        self.unified_cursor_monitor: Optional[UnifiedCursorMonitor] = None
         self.markdown_monitor: Optional[CursorMarkdownMonitor] = None
         self.claude_code_monitor: Optional[ClaudeCodeTranscriptMonitor] = None
         self.claude_session_monitor: Optional[ClaudeCodeSessionMonitor] = None
@@ -257,6 +259,48 @@ class TelemetryServer:
             f"duckdb_enabled={enable_duckdb})"
         )
 
+    def _initialize_unified_cursor_monitor(self) -> None:
+        """Initialize UnifiedCursorMonitor for comprehensive Cursor telemetry."""
+        # Load unified cursor monitor config
+        unified_config = self.config.get_cursor_config("unified_monitor")
+        enabled = unified_config.get("enabled", False)  # Default to False during initial rollout
+
+        if not enabled:
+            logger.info("UnifiedCursorMonitor is disabled")
+            return
+
+        # Require session monitor to be initialized
+        if not self.session_monitor:
+            logger.warning("Session monitor not initialized, cannot start UnifiedCursorMonitor")
+            return
+
+        logger.info("Initializing UnifiedCursorMonitor")
+
+        # Create config
+        monitor_config = CursorMonitorConfig(
+            poll_interval=unified_config.get("poll_interval", 60.0),
+            debounce_delay=unified_config.get("debounce_delay", 10.0),
+            query_timeout=unified_config.get("query_timeout", 1.5),
+            cache_ttl=unified_config.get("cache_ttl", 300),
+            batch_size=unified_config.get("batch_size", 100),
+            use_watchdog=unified_config.get("use_watchdog", True),
+        )
+
+        # Create UnifiedCursorMonitor
+        self.unified_cursor_monitor = UnifiedCursorMonitor(
+            redis_client=self.redis_client,
+            session_monitor=self.session_monitor,
+            sqlite_client=self.sqlite_client,
+            config=monitor_config
+        )
+
+        logger.info(
+            f"UnifiedCursorMonitor initialized "
+            f"(poll_interval={monitor_config.poll_interval}s, "
+            f"debounce={monitor_config.debounce_delay}s, "
+            f"batch_size={monitor_config.batch_size})"
+        )
+
     def _initialize_claude_code_monitor(self) -> None:
         """Initialize Claude Code monitors (session, JSONL, transcript)."""
         # Check if claude code monitoring is enabled (default: True)
@@ -331,6 +375,7 @@ class TelemetryServer:
             self._initialize_redis()
             self._initialize_consumer()
             self._initialize_cursor_monitor()
+            self._initialize_unified_cursor_monitor()
             self._initialize_markdown_monitor()
             self._initialize_claude_code_monitor()
 
@@ -370,11 +415,29 @@ class TelemetryServer:
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     loop.run_until_complete(self.cursor_timeout_manager.start())
-                
+
                 cursor_timeout_thread = threading.Thread(target=run_cursor_timeout_manager, daemon=True)
                 cursor_timeout_thread.start()
                 self.monitor_threads.append(cursor_timeout_thread)
                 logger.info("Cursor session timeout manager started")
+
+            # Start unified cursor monitor (if enabled)
+            if self.unified_cursor_monitor:
+                def run_unified_cursor_monitor():
+                    import asyncio
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(self.unified_cursor_monitor.start())
+                    except Exception as e:
+                        logger.error(f"UnifiedCursorMonitor thread crashed: {e}", exc_info=True)
+
+                unified_cursor_thread = threading.Thread(target=run_unified_cursor_monitor, daemon=True)
+                unified_cursor_thread.start()
+                self.monitor_threads.append(unified_cursor_thread)
+                logger.info("UnifiedCursorMonitor started")
 
             # Start metrics logging task (if Cursor monitoring enabled)
             if self.session_monitor:
