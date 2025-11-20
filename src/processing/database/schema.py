@@ -508,6 +508,42 @@ def create_schema(client: SQLiteClient) -> None:
     logger.info("Database schema created successfully")
 
 
+def detect_schema_version(client: SQLiteClient) -> Optional[int]:
+    """
+    Detect current schema version.
+    
+    Returns:
+        Schema version number, or None if not versioned
+    """
+    try:
+        version = get_schema_version(client)
+        if version is not None:
+            return version
+        
+        # Check if database has old schema (unversioned)
+        with client.get_connection() as conn:
+            cursor = conn.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='conversations'
+            """)
+            if not cursor.fetchone():
+                # No conversations table - new database
+                return None
+            
+            # Check for old schema columns
+            cursor = conn.execute("PRAGMA table_info(conversations)")
+            columns = {row[1] for row in cursor.fetchall()}
+            
+            if 'external_session_id' in columns and 'external_id' not in columns:
+                # Old schema detected - assume version 1
+                return 1
+        
+        return None
+    except Exception as e:
+        logger.debug(f"Error detecting schema version: {e}")
+        return None
+
+
 def get_schema_version(client: SQLiteClient) -> Optional[int]:
     """
     Get current schema version from database.
@@ -588,7 +624,7 @@ def migrate_to_v2(client: SQLiteClient) -> None:
     
     import json
     import uuid
-    from datetime import datetime
+    from datetime import datetime, timezone
     
     try:
         with client.get_connection() as conn:
@@ -712,20 +748,35 @@ def migrate_to_v2(client: SQLiteClient) -> None:
                 logger.info("No Cursor conversations found, skipping session migration")
                 session_mapping = {}
             else:
-                # Only select Cursor conversations with valid external_session_id
+                # Use window function to pick earliest session per external_session_id
+                # This handles duplicates by selecting the first occurrence
                 cursor = conn.execute("""
-                    SELECT DISTINCT
+                    WITH ranked_sessions AS (
+                        SELECT 
+                            external_session_id,
+                            workspace_hash,
+                            workspace_name,
+                            started_at,
+                            ended_at,
+                            json_extract(context, '$.workspace_path') as workspace_path,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY external_session_id 
+                                ORDER BY started_at ASC, workspace_hash ASC
+                            ) as rn
+                        FROM conversations
+                        WHERE platform = 'cursor'
+                          AND external_session_id IS NOT NULL
+                          AND external_session_id != ''
+                    )
+                    SELECT 
                         external_session_id,
                         workspace_hash,
                         workspace_name,
-                        MIN(started_at) as started_at,
-                        MAX(ended_at) as ended_at,
-                        json_extract(context, '$.workspace_path') as workspace_path
-                    FROM conversations
-                    WHERE platform = 'cursor'
-                      AND external_session_id IS NOT NULL
-                      AND external_session_id != ''
-                    GROUP BY external_session_id, workspace_hash
+                        started_at,
+                        ended_at,
+                        workspace_path
+                    FROM ranked_sessions
+                    WHERE rn = 1
                 """)
                 
                 session_mapping = {}  # external_session_id -> new internal session_id
@@ -741,7 +792,18 @@ def migrate_to_v2(client: SQLiteClient) -> None:
                     
                     # Validate we have required fields
                     if not external_session_id or not workspace_hash:
-                        logger.warning(f"Skipping invalid Cursor session: external_session_id={external_session_id}, workspace_hash={workspace_hash}")
+                        logger.warning(
+                            f"Skipping invalid Cursor session: "
+                            f"external_session_id={external_session_id}, workspace_hash={workspace_hash}"
+                        )
+                        continue
+                    
+                    # Check for duplicates before inserting
+                    if external_session_id in session_mapping:
+                        logger.warning(
+                            f"Duplicate external_session_id detected: {external_session_id}. "
+                            f"Using first occurrence."
+                        )
                         continue
                     
                     # Generate new internal session ID
@@ -756,7 +818,10 @@ def migrate_to_v2(client: SQLiteClient) -> None:
                         workspace_path,
                         started_at,
                         ended_at,
-                        json.dumps({})  # metadata
+                        json.dumps({
+                            'migrated': True,
+                            'migration_date': datetime.now(timezone.utc).isoformat()
+                        })
                     ))
                 
                 if cursor_sessions_data:
@@ -765,7 +830,24 @@ def migrate_to_v2(client: SQLiteClient) -> None:
                         (id, external_session_id, workspace_hash, workspace_name, workspace_path, started_at, ended_at, metadata)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, cursor_sessions_data)
-                    logger.info(f"Migrated {len(cursor_sessions_data)} Cursor sessions")
+                    
+                    # Verify all sessions were inserted and check for duplicates
+                    inserted_count = conn.execute("SELECT COUNT(*) FROM cursor_sessions").fetchone()[0]
+                    logger.info(f"Inserted {len(cursor_sessions_data)} Cursor sessions (total in table: {inserted_count})")
+                    
+                    # Verify no duplicates after migration
+                    cursor = conn.execute("""
+                        SELECT external_session_id, COUNT(*) as cnt
+                        FROM cursor_sessions
+                        GROUP BY external_session_id
+                        HAVING cnt > 1
+                    """)
+                    duplicates = cursor.fetchall()
+                    if duplicates:
+                        logger.error(f"Found {len(duplicates)} duplicate external_session_ids after migration!")
+                        for ext_id, count in duplicates:
+                            logger.error(f"  - {ext_id}: {count} occurrences")
+                        raise RuntimeError("Migration failed: duplicate external_session_ids detected")
                 else:
                     logger.warning("No valid Cursor sessions found to migrate")
                     session_mapping = {}

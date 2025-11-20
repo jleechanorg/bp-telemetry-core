@@ -9,14 +9,54 @@ Manages persistent session state in SQLite database, providing durability
 and recovery capabilities for Cursor session management.
 """
 
+import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from ..database.sqlite_client import SQLiteClient
+from .metrics import get_metrics
 
 logger = logging.getLogger(__name__)
+
+
+class PersistenceError(Exception):
+    """Base exception for persistence errors."""
+    pass
+
+
+class SessionNotFoundError(PersistenceError):
+    """Session not found in database."""
+    pass
+
+
+class DatabaseError(PersistenceError):
+    """Database operation failed."""
+    pass
+
+
+def retry_on_db_error(max_retries=3, delay=0.1):
+    """Retry decorator for database operations."""
+    def decorator(func):
+        async def wrapper(*args, **kwargs):
+            last_error = None
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        logger.warning(
+                            f"Database operation failed (attempt {attempt + 1}/{max_retries}): {e}. Retrying..."
+                        )
+                        await asyncio.sleep(delay * (attempt + 1))  # Exponential backoff
+                    else:
+                        logger.error(f"Database operation failed after {max_retries} attempts: {e}")
+            raise DatabaseError(f"Operation failed after {max_retries} attempts") from last_error
+        return wrapper
+    return decorator
 
 
 class CursorSessionPersistence:
@@ -35,6 +75,7 @@ class CursorSessionPersistence:
         """
         self.sqlite_client = sqlite_client
 
+    @retry_on_db_error(max_retries=3, delay=0.1)
     async def save_session_start(
         self,
         external_session_id: str,
@@ -57,8 +98,21 @@ class CursorSessionPersistence:
 
         Returns:
             Internal session ID (UUID)
+            
+        Raises:
+            DatabaseError: If database operation fails after retries
+            ValueError: If required parameters are invalid
         """
         import uuid
+        
+        metrics = get_metrics()
+        start_time = time.time()
+        
+        # Validate inputs
+        if not external_session_id:
+            raise ValueError("external_session_id is required")
+        if not workspace_hash:
+            raise ValueError("workspace_hash is required")
         
         try:
             # Generate internal session ID
@@ -75,10 +129,8 @@ class CursorSessionPersistence:
             }
             
             # Insert into cursor_sessions table
-            # Use INSERT OR IGNORE to avoid overwriting existing sessions
-            # If session already exists, get its internal ID
             with self.sqlite_client.get_connection() as conn:
-                # Check if session already exists
+                # Check if session already exists (with retry logic)
                 cursor = conn.execute("""
                     SELECT id FROM cursor_sessions
                     WHERE external_session_id = ?
@@ -88,33 +140,77 @@ class CursorSessionPersistence:
                 if existing:
                     # Session already exists, return existing internal ID
                     internal_session_id = existing[0]
-                    logger.debug(f"Cursor session {external_session_id} already exists, using existing internal ID: {internal_session_id}")
+                    logger.debug(
+                        f"Cursor session {external_session_id} already exists, "
+                        f"using existing internal ID: {internal_session_id}"
+                    )
                 else:
                     # Insert new session
-                    cursor = conn.execute("""
-                        INSERT INTO cursor_sessions (
-                            id, external_session_id, workspace_hash,
-                            workspace_name, workspace_path, started_at, metadata
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        internal_session_id,
-                        external_session_id,
-                        workspace_hash,
-                        workspace_name,
-                        workspace_path,
-                        datetime.now(timezone.utc).isoformat(),
-                        json.dumps(session_metadata),
-                    ))
-                    conn.commit()
-                    logger.info(f"Persisted Cursor session start: {external_session_id} -> {internal_session_id}")
-                
+                    try:
+                        cursor = conn.execute("""
+                            INSERT INTO cursor_sessions (
+                                id, external_session_id, workspace_hash,
+                                workspace_name, workspace_path, started_at, metadata
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            internal_session_id,
+                            external_session_id,
+                            workspace_hash,
+                            workspace_name,
+                            workspace_path,
+                            datetime.now(timezone.utc).isoformat(),
+                            json.dumps(session_metadata),
+                        ))
+                        conn.commit()
+                        logger.info(
+                            f"Persisted Cursor session start: {external_session_id} -> {internal_session_id}"
+                        )
+                    except Exception as e:
+                        conn.rollback()
+                        # Check if it's a unique constraint violation
+                        if "UNIQUE constraint failed" in str(e) or "UNIQUE constraint" in str(e):
+                            # Race condition: session was inserted between check and insert
+                            # Fetch the existing session
+                            cursor = conn.execute("""
+                                SELECT id FROM cursor_sessions
+                                WHERE external_session_id = ?
+                            """, (external_session_id,))
+                            existing = cursor.fetchone()
+                            if existing:
+                                internal_session_id = existing[0]
+                                logger.debug(
+                                    f"Race condition detected: session {external_session_id} "
+                                    f"was inserted concurrently, using existing ID: {internal_session_id}"
+                                )
+                            else:
+                                raise DatabaseError(f"Failed to insert session: {e}") from e
+                        else:
+                            raise DatabaseError(f"Failed to insert session: {e}") from e
+            
+            duration = time.time() - start_time
+            metrics.record_operation('session_start', duration, success=True)
             return internal_session_id
-
-        except Exception as e:
-            logger.error(f"Failed to persist session start for {external_session_id}: {e}", exc_info=True)
-            # Don't raise - allow in-memory tracking to continue
+            
+        except DatabaseError:
+            # Re-raise database errors
+            duration = time.time() - start_time
+            metrics.record_operation('session_start', duration, success=False)
             raise
+        except ValueError:
+            # Re-raise validation errors
+            duration = time.time() - start_time
+            metrics.record_operation('session_start', duration, success=False)
+            raise
+        except Exception as e:
+            duration = time.time() - start_time
+            metrics.record_operation('session_start', duration, success=False)
+            logger.error(
+                f"Unexpected error persisting session start for {external_session_id}: {e}",
+                exc_info=True
+            )
+            raise DatabaseError(f"Unexpected error: {e}") from e
 
+    @retry_on_db_error(max_retries=3, delay=0.1)
     async def save_session_end(
         self,
         external_session_id: str,
@@ -128,9 +224,30 @@ class CursorSessionPersistence:
         Args:
             external_session_id: Session ID from Cursor extension
             end_reason: Reason for session end ('normal', 'timeout', 'crash')
+            
+        Raises:
+            SessionNotFoundError: If session doesn't exist
+            DatabaseError: If database operation fails
         """
+        metrics = get_metrics()
+        start_time = time.time()
+        
+        if not external_session_id:
+            raise ValueError("external_session_id is required")
+        
         try:
             with self.sqlite_client.get_connection() as conn:
+                # Check if session exists first
+                cursor = conn.execute("""
+                    SELECT id FROM cursor_sessions
+                    WHERE external_session_id = ?
+                """, (external_session_id,))
+                
+                if not cursor.fetchone():
+                    raise SessionNotFoundError(
+                        f"Session {external_session_id} not found in cursor_sessions table"
+                    )
+                
                 # Update ended_at timestamp
                 cursor = conn.execute("""
                     UPDATE cursor_sessions
@@ -142,38 +259,66 @@ class CursorSessionPersistence:
                 ))
                 
                 if cursor.rowcount == 0:
-                    logger.warning(f"Session {external_session_id} not found in cursor_sessions table for end update")
-                else:
-                    # Update metadata with end reason
-                    cursor = conn.execute("""
-                        SELECT metadata FROM cursor_sessions
-                        WHERE external_session_id = ?
-                    """, (external_session_id,))
-                    
-                    row = cursor.fetchone()
-                    if row:
-                        try:
-                            metadata = json.loads(row[0]) if row[0] else {}
-                            metadata['end_reason'] = end_reason
-                            metadata['ended_at'] = datetime.now(timezone.utc).isoformat()
-                            
-                            cursor = conn.execute("""
-                                UPDATE cursor_sessions
-                                SET metadata = ?
-                                WHERE external_session_id = ?
-                            """, (
-                                json.dumps(metadata),
-                                external_session_id
-                            ))
-                        except json.JSONDecodeError:
-                            logger.warning(f"Failed to parse metadata for session {external_session_id}")
-                    
-                    conn.commit()
-                    logger.info(f"Persisted Cursor session end: {external_session_id} (reason: {end_reason})")
-
+                    # This shouldn't happen if we checked above, but handle it
+                    raise SessionNotFoundError(
+                        f"Session {external_session_id} not found for end update"
+                    )
+                
+                # Update metadata with end reason
+                cursor = conn.execute("""
+                    SELECT metadata FROM cursor_sessions
+                    WHERE external_session_id = ?
+                """, (external_session_id,))
+                
+                row = cursor.fetchone()
+                if row:
+                    try:
+                        metadata = json.loads(row[0]) if row[0] else {}
+                        metadata['end_reason'] = end_reason
+                        metadata['ended_at'] = datetime.now(timezone.utc).isoformat()
+                        
+                        cursor = conn.execute("""
+                            UPDATE cursor_sessions
+                            SET metadata = ?
+                            WHERE external_session_id = ?
+                        """, (
+                            json.dumps(metadata),
+                            external_session_id
+                        ))
+                    except json.JSONDecodeError as e:
+                        logger.warning(
+                            f"Failed to parse metadata for session {external_session_id}: {e}. "
+                            f"Creating new metadata."
+                        )
+                        # Create new metadata if parsing fails
+                        metadata = {
+                            'end_reason': end_reason,
+                            'ended_at': datetime.now(timezone.utc).isoformat()
+                        }
+                        cursor = conn.execute("""
+                            UPDATE cursor_sessions
+                            SET metadata = ?
+                            WHERE external_session_id = ?
+                        """, (json.dumps(metadata), external_session_id))
+                
+                conn.commit()
+                duration = time.time() - start_time
+                metrics.record_operation('session_end', duration, success=True)
+                logger.info(f"Persisted Cursor session end: {external_session_id} (reason: {end_reason})")
+                
+        except SessionNotFoundError:
+            # Re-raise session not found errors
+            duration = time.time() - start_time
+            metrics.record_operation('session_end', duration, success=False)
+            raise
         except Exception as e:
-            logger.error(f"Failed to persist session end for {external_session_id}: {e}", exc_info=True)
-            # Don't raise - allow cleanup to continue
+            duration = time.time() - start_time
+            metrics.record_operation('session_end', duration, success=False)
+            logger.error(
+                f"Failed to persist session end for {external_session_id}: {e}",
+                exc_info=True
+            )
+            raise DatabaseError(f"Failed to persist session end: {e}") from e
 
     async def get_session_by_external_id(self, external_session_id: str) -> Optional[dict]:
         """

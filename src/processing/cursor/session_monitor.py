@@ -16,7 +16,11 @@ import threading
 from typing import Dict, Optional
 import redis
 
-from .session_persistence import CursorSessionPersistence
+from .session_persistence import (
+    CursorSessionPersistence,
+    SessionNotFoundError,
+    DatabaseError
+)
 from ..database.sqlite_client import SQLiteClient
 
 logger = logging.getLogger(__name__)
@@ -212,8 +216,15 @@ class SessionMonitor:
                             workspace_name=workspace_name,
                             metadata=metadata
                         )
+                    except SessionNotFoundError:
+                        # This shouldn't happen for session_start, but log it
+                        logger.error(f"Session not found during start (unexpected): {session_id}")
+                        # Continue with in-memory tracking
+                    except DatabaseError as e:
+                        logger.error(f"Database error persisting session start: {e}")
+                        # Continue with in-memory tracking - system degrades gracefully
                     except Exception as e:
-                        logger.error(f"Failed to persist session start: {e}")
+                        logger.error(f"Unexpected error persisting session start: {e}", exc_info=True)
                         # Continue with in-memory tracking
                 
                 # Add to in-memory dict (fast path)
@@ -237,8 +248,15 @@ class SessionMonitor:
                 if self.persistence:
                     try:
                         await self.persistence.save_session_end(session_id, end_reason='normal')
+                    except SessionNotFoundError as e:
+                        logger.warning(f"Session not found during end: {e}")
+                        # Continue with cleanup
+                    except DatabaseError as e:
+                        logger.error(f"Database error persisting session end: {e}")
+                        # Continue with cleanup - system degrades gracefully
                     except Exception as e:
-                        logger.error(f"Failed to persist session end: {e}")
+                        logger.error(f"Unexpected error persisting session end: {e}", exc_info=True)
+                        # Continue with cleanup
                 
                 # Then remove from memory
                 with self._lock:

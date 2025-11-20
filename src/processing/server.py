@@ -26,6 +26,7 @@ from .cursor.session_monitor import SessionMonitor
 from .cursor.database_monitor import CursorDatabaseMonitor
 from .cursor.markdown_monitor import CursorMarkdownMonitor
 from .cursor.session_timeout import CursorSessionTimeoutManager
+from .cursor.metrics import get_metrics
 from .claude_code.transcript_monitor import ClaudeCodeTranscriptMonitor
 from .claude_code.session_monitor import ClaudeCodeSessionMonitor
 from .claude_code.jsonl_monitor import ClaudeCodeJSONLMonitor
@@ -83,31 +84,14 @@ class TelemetryServer:
         self.sqlite_client.initialize_database()
         
         # Check schema version and migrate if needed
-        from src.processing.database.schema import get_schema_version, migrate_schema, SCHEMA_VERSION
-        current_version = get_schema_version(self.sqlite_client)
+        from src.processing.database.schema import (
+            create_schema, get_schema_version, migrate_schema, 
+            SCHEMA_VERSION, detect_schema_version
+        )
         
-        # Check if conversations table exists with old schema (external_session_id column)
-        needs_migration = False
+        current_version = detect_schema_version(self.sqlite_client)
+        
         if current_version is None:
-            # Check if database has old schema by looking for conversations table with external_session_id
-            try:
-                with self.sqlite_client.get_connection() as conn:
-                    cursor = conn.execute("""
-                        SELECT name FROM sqlite_master 
-                        WHERE type='table' AND name='conversations'
-                    """)
-                    if cursor.fetchone():
-                        # Table exists, check for old column
-                        cursor = conn.execute("PRAGMA table_info(conversations)")
-                        columns = [row[1] for row in cursor.fetchall()]
-                        if 'external_session_id' in columns and 'external_id' not in columns:
-                            # Old schema detected
-                            needs_migration = True
-                            logger.info("Detected old schema (external_session_id), will migrate")
-            except Exception as e:
-                logger.debug(f"Error checking schema: {e}")
-        
-        if current_version is None and not needs_migration:
             # First time setup - create schema
             logger.info("Creating database schema...")
             create_schema(self.sqlite_client)
@@ -121,10 +105,6 @@ class TelemetryServer:
                 (SCHEMA_VERSION,)
             )
             logger.info(f"Database schema created (version {SCHEMA_VERSION})")
-        elif current_version is None and needs_migration:
-            # Old schema detected but no version recorded - assume version 1
-            logger.info("Detected unversioned database with old schema, migrating from version 1")
-            migrate_schema(self.sqlite_client, 1, SCHEMA_VERSION)
         elif current_version < SCHEMA_VERSION:
             # Migration needed
             logger.info(f"Migrating schema from version {current_version} to {SCHEMA_VERSION}")
@@ -324,6 +304,19 @@ class TelemetryServer:
 
         logger.info("Claude Code monitors initialized")
 
+    async def _log_metrics_periodically(self):
+        """Log metrics periodically."""
+        import asyncio
+        while self.running:
+            await asyncio.sleep(300)  # Every 5 minutes
+            try:
+                metrics = get_metrics()
+                stats = metrics.get_stats()
+                if stats:
+                    logger.info(f"Session metrics: {stats}")
+            except Exception as e:
+                logger.debug(f"Error logging metrics: {e}")
+
     def start(self) -> None:
         """Start the server."""
         if self.running:
@@ -377,6 +370,19 @@ class TelemetryServer:
                 cursor_timeout_thread.start()
                 self.monitor_threads.append(cursor_timeout_thread)
                 logger.info("Cursor session timeout manager started")
+
+            # Start metrics logging task (if Cursor monitoring enabled)
+            if self.session_monitor:
+                def run_metrics_logger():
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(self._log_metrics_periodically())
+                
+                metrics_thread = threading.Thread(target=run_metrics_logger, daemon=True)
+                metrics_thread.start()
+                self.monitor_threads.append(metrics_thread)
+                logger.info("Session metrics logger started")
 
             # Start markdown monitor (if enabled)
             if self.markdown_monitor:
@@ -463,6 +469,15 @@ class TelemetryServer:
             return
 
         logger.info("Stopping server...")
+        
+        # Log final metrics before shutdown
+        try:
+            metrics = get_metrics()
+            stats = metrics.get_stats()
+            if stats:
+                logger.info(f"Final session metrics: {stats}")
+        except Exception as e:
+            logger.debug(f"Error logging final metrics: {e}")
         self.running = False
 
         # Stop Cursor timeout manager
