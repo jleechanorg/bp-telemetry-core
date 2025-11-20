@@ -14,6 +14,7 @@ import json
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Dict, Optional
 import redis
 
@@ -25,6 +26,66 @@ from .session_persistence import (
 from ..database.sqlite_client import SQLiteClient
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_workspace_name(workspace_path: str) -> str:
+    """
+    Extract human-readable workspace name from full path.
+
+    Examples:
+        /Users/user/projects/my-app -> my-app
+        /home/user/dev/workspace -> workspace
+        C:\\Projects\\my-app -> my-app
+
+    Args:
+        workspace_path: Full path to workspace
+
+    Returns:
+        Last directory name in path, or empty string if extraction fails
+    """
+    if not workspace_path:
+        return ""
+
+    try:
+        # First normalize path separators for cross-platform handling
+        # This ensures Windows paths work on Unix and vice versa
+        normalized = workspace_path.replace('\\', '/')
+
+        # Check if this looks like a Windows path on a Unix system
+        # If the path doesn't start with '/' and contains ':', it's likely Windows
+        if not normalized.startswith('/') and ':' in normalized:
+            # Windows path - use string manipulation
+            parts = normalized.rstrip('/').split('/')
+            # Return last non-empty part
+            for part in reversed(parts):
+                if part and part != ':':  # Ignore drive letter only
+                    return part
+            return ""
+        else:
+            # Unix path or already normalized - use pathlib
+            path = Path(workspace_path)
+            name = path.name  # Get last component
+
+            # Handle edge case where path ends with separator
+            if not name and path.parent != path:
+                name = path.parent.name
+
+            return name or ""
+    except Exception as e:
+        # Fallback to simple string manipulation if pathlib fails
+        logger.debug(f"Path extraction failed, using fallback: {e}")
+        try:
+            # Normalize separators and remove trailing ones
+            normalized = workspace_path.replace('\\', '/').rstrip('/')
+            parts = normalized.split('/')
+            # Return last non-empty part
+            for part in reversed(parts):
+                if part:
+                    return part
+            return ""
+        except Exception:
+            logger.warning(f"Failed to extract workspace name from path: {workspace_path}")
+            return ""
 
 
 class SessionMonitor:
@@ -462,8 +523,17 @@ class SessionMonitor:
                 return True  # ACK to prevent reprocessing
 
             if event_type == 'session_start':
-                # Extract workspace_name from metadata if available
-                workspace_name = metadata.get('workspace_name') or payload.get('workspace_name') or ''
+                # Extract workspace_name - try from event first, then extract from path
+                workspace_name_from_event = metadata.get('workspace_name') or payload.get('workspace_name')
+                if workspace_name_from_event:
+                    workspace_name = workspace_name_from_event
+                    logger.debug(f"Using workspace_name from event: {workspace_name}")
+                else:
+                    workspace_name = _extract_workspace_name(workspace_path)
+                    if workspace_name:
+                        logger.debug(f"Extracted workspace_name from path: {workspace_name} (path: {workspace_path})")
+                    else:
+                        logger.warning(f"Could not extract workspace_name from path: {workspace_path}")
                 
                 # Persist to database (durable)
                 internal_session_id = None
