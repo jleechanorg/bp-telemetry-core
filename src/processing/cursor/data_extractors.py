@@ -33,7 +33,8 @@ class ComposerDataExtractor:
         workspace_hash: str,
         storage_level: str,
         database_table: str,
-        item_key: str
+        item_key: str,
+        external_session_id: Optional[str] = None
     ) -> List[dict]:
         """
         Extract all events from a composer conversation.
@@ -47,7 +48,8 @@ class ComposerDataExtractor:
             workspace_hash,
             storage_level,
             database_table,
-            item_key
+            item_key,
+            external_session_id
         )
         events.append(composer_event)
 
@@ -65,7 +67,8 @@ class ComposerDataExtractor:
                 workspace_hash,
                 storage_level,
                 database_table,
-                item_key
+                item_key,
+                external_session_id
             )
             events.append(bubble_event)
 
@@ -80,7 +83,8 @@ class ComposerDataExtractor:
                     workspace_hash,
                     storage_level,
                     database_table,
-                    item_key
+                    item_key,
+                    external_session_id
                 )
                 events.append(cap_event)
 
@@ -92,22 +96,28 @@ class ComposerDataExtractor:
         workspace_hash: str,
         storage_level: str,
         database_table: str,
-        item_key: str
+        item_key: str,
+        external_session_id: Optional[str] = None
     ) -> dict:
         """Extract composer-level fields."""
+        metadata = {
+            "storage_level": storage_level,
+            "workspace_hash": workspace_hash,
+            "database_table": database_table,
+            "item_key": item_key,
+            "source": "composer_extractor",
+        }
+        if external_session_id:
+            metadata["external_session_id"] = external_session_id
+
         return {
             "version": "0.1.0",
             "hook_type": "DatabaseTrace",
             "event_type": "composer",
             "event_id": str(uuid.uuid4()),
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "metadata": {
-                "storage_level": storage_level,
-                "workspace_hash": workspace_hash,
-                "database_table": database_table,
-                "item_key": item_key,
-                "source": "composer_extractor",
-            },
+            "platform": "cursor",
+            "metadata": metadata,
             "payload": {
                 "extracted_fields": {
                     "composer_id": data.get("composerId"),
@@ -135,10 +145,21 @@ class ComposerDataExtractor:
         workspace_hash: str,
         storage_level: str,
         database_table: str,
-        item_key: str
+        item_key: str,
+        external_session_id: Optional[str] = None
     ) -> dict:
         """Extract data from a single bubble."""
         timing_info = bubble.get("timingInfo", {})
+
+        metadata = {
+            "storage_level": storage_level,
+            "workspace_hash": workspace_hash,
+            "database_table": database_table,
+            "item_key": item_key,
+            "source": "bubble_extractor",
+        }
+        if external_session_id:
+            metadata["external_session_id"] = external_session_id
 
         return {
             "version": "0.1.0",
@@ -146,13 +167,8 @@ class ComposerDataExtractor:
             "event_type": "bubble",
             "event_id": str(uuid.uuid4()),
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "metadata": {
-                "storage_level": storage_level,
-                "workspace_hash": workspace_hash,
-                "database_table": database_table,
-                "item_key": item_key,
-                "source": "bubble_extractor",
-            },
+            "platform": "cursor",
+            "metadata": metadata,
             "payload": {
                 "extracted_fields": {
                     "composer_id": composer_id,
@@ -183,22 +199,28 @@ class ComposerDataExtractor:
         workspace_hash: str,
         storage_level: str,
         database_table: str,
-        item_key: str
+        item_key: str,
+        external_session_id: Optional[str] = None
     ) -> dict:
         """Extract capability execution data."""
+        metadata = {
+            "storage_level": storage_level,
+            "workspace_hash": workspace_hash,
+            "database_table": database_table,
+            "item_key": item_key,
+            "source": "capability_extractor",
+        }
+        if external_session_id:
+            metadata["external_session_id"] = external_session_id
+
         return {
             "version": "0.1.0",
             "hook_type": "DatabaseTrace",
             "event_type": "capability",
             "event_id": str(uuid.uuid4()),
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "metadata": {
-                "storage_level": storage_level,
-                "workspace_hash": workspace_hash,
-                "database_table": database_table,
-                "item_key": item_key,
-                "source": "capability_extractor",
-            },
+            "platform": "cursor",
+            "metadata": metadata,
             "payload": {
                 "extracted_fields": {
                     "composer_id": composer_id,
@@ -226,22 +248,28 @@ class BackgroundComposerExtractor:
         workspace_hash: str,
         storage_level: str,
         database_table: str,
-        item_key: str
+        item_key: str,
+        external_session_id: Optional[str] = None
     ) -> dict:
         """Extract background composer persistent data."""
+        metadata = {
+            "storage_level": storage_level,
+            "workspace_hash": workspace_hash,
+            "database_table": database_table,
+            "item_key": item_key,
+            "source": "background_composer_extractor",
+        }
+        if external_session_id:
+            metadata["external_session_id"] = external_session_id
+
         return {
             "version": "0.1.0",
             "hook_type": "DatabaseTrace",
             "event_type": "background_composer",
             "event_id": str(uuid.uuid4()),
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "metadata": {
-                "storage_level": storage_level,
-                "workspace_hash": workspace_hash,
-                "database_table": database_table,
-                "item_key": item_key,
-                "source": "background_composer_extractor",
-            },
+            "platform": "cursor",
+            "metadata": metadata,
             "payload": {
                 "extracted_fields": {
                     "last_active_timestamp": data.get("lastActiveTimestamp"),
@@ -264,22 +292,28 @@ class AgentModeExtractor:
         workspace_hash: str,
         storage_level: str,
         database_table: str,
-        item_key: str
+        item_key: str,
+        external_session_id: Optional[str] = None
     ) -> dict:
         """Extract agent mode exit information."""
+        metadata = {
+            "storage_level": storage_level,
+            "workspace_hash": workspace_hash,
+            "database_table": database_table,
+            "item_key": item_key,
+            "source": "agent_mode_extractor",
+        }
+        if external_session_id:
+            metadata["external_session_id"] = external_session_id
+
         return {
             "version": "0.1.0",
             "hook_type": "DatabaseTrace",
             "event_type": "agent_mode",
             "event_id": str(uuid.uuid4()),
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "metadata": {
-                "storage_level": storage_level,
-                "workspace_hash": workspace_hash,
-                "database_table": database_table,
-                "item_key": item_key,
-                "source": "agent_mode_extractor",
-            },
+            "platform": "cursor",
+            "metadata": metadata,
             "payload": {
                 "extracted_fields": {
                     "session_id": exit_info.get("sessionId"),
@@ -304,7 +338,8 @@ class GenerationExtractor:
         workspace_hash: str,
         storage_level: str,
         database_table: str,
-        item_key: str
+        item_key: str,
+        external_session_id: Optional[str] = None
     ) -> List[dict]:
         """Extract generation events from array."""
         events = []
@@ -313,19 +348,24 @@ class GenerationExtractor:
             if not isinstance(gen, dict):
                 continue
 
+            metadata = {
+                "storage_level": storage_level,
+                "workspace_hash": workspace_hash,
+                "database_table": database_table,
+                "item_key": item_key,
+                "source": "generation_extractor",
+            }
+            if external_session_id:
+                metadata["external_session_id"] = external_session_id
+
             event = {
                 "version": "0.1.0",
                 "hook_type": "DatabaseTrace",
                 "event_type": "generation",
                 "event_id": str(uuid.uuid4()),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "metadata": {
-                    "storage_level": storage_level,
-                    "workspace_hash": workspace_hash,
-                    "database_table": database_table,
-                    "item_key": item_key,
-                    "source": "generation_extractor",
-                },
+                "platform": "cursor",
+                "metadata": metadata,
                 "payload": {
                     "extracted_fields": {
                         "generation_uuid": gen.get("generationUUID"),
@@ -354,7 +394,8 @@ class PromptExtractor:
         workspace_hash: str,
         storage_level: str,
         database_table: str,
-        item_key: str
+        item_key: str,
+        external_session_id: Optional[str] = None
     ) -> List[dict]:
         """Extract prompt events from array."""
         events = []
@@ -363,19 +404,24 @@ class PromptExtractor:
             if not isinstance(prompt, dict):
                 continue
 
+            metadata = {
+                "storage_level": storage_level,
+                "workspace_hash": workspace_hash,
+                "database_table": database_table,
+                "item_key": item_key,
+                "source": "prompt_extractor",
+            }
+            if external_session_id:
+                metadata["external_session_id"] = external_session_id
+
             event = {
                 "version": "0.1.0",
                 "hook_type": "DatabaseTrace",
                 "event_type": "prompt",
                 "event_id": str(uuid.uuid4()),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "metadata": {
-                    "storage_level": storage_level,
-                    "workspace_hash": workspace_hash,
-                    "database_table": database_table,
-                    "item_key": item_key,
-                    "source": "prompt_extractor",
-                },
+                "platform": "cursor",
+                "metadata": metadata,
                 "payload": {
                     "extracted_fields": {
                         "command_type": prompt.get("commandType"),

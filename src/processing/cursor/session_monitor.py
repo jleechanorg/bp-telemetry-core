@@ -76,6 +76,10 @@ class SessionMonitor:
 
         self.running = False
 
+        # Callbacks for session lifecycle events
+        self.on_session_start = None  # Called when a session starts
+        self.on_session_end = None    # Called when a session ends
+
     async def start(self):
         """
         Start monitoring sessions with recovery.
@@ -117,7 +121,7 @@ class SessionMonitor:
         """Recover active sessions from database."""
         if not self.persistence:
             return
-        
+
         try:
             recovered = await self.persistence.recover_active_sessions()
             with self._lock:
@@ -126,6 +130,14 @@ class SessionMonitor:
                     if workspace_hash:
                         self.active_sessions[workspace_hash] = session_info
             logger.info(f"Recovered {len(recovered)} active Cursor sessions from database")
+
+            # Call on_session_start callbacks for recovered sessions
+            if self.on_session_start:
+                for workspace_hash, session_info in self.active_sessions.items():
+                    try:
+                        await self.on_session_start(workspace_hash, session_info)
+                    except Exception as e:
+                        logger.error(f"Error calling on_session_start for recovered session {workspace_hash}: {e}", exc_info=True)
         except Exception as e:
             logger.error(f"Failed to recover active sessions: {e}", exc_info=True)
 
@@ -486,11 +498,19 @@ class SessionMonitor:
                     "started_at": asyncio.get_event_loop().time(),
                     "source": "redis",
                 }
-                
+
                 with self._lock:
                     self.active_sessions[workspace_hash] = session_info
-                
+
                 logger.info(f"Cursor session started: {workspace_hash} -> {session_id}")
+
+                # Call the on_session_start callback if registered
+                if self.on_session_start:
+                    try:
+                        await self.on_session_start(workspace_hash, session_info)
+                    except Exception as e:
+                        logger.error(f"Error in on_session_start callback: {e}", exc_info=True)
+
                 return True  # Successfully processed
 
             elif event_type == 'session_end':
@@ -515,6 +535,13 @@ class SessionMonitor:
                         logger.info(f"Cursor session ended: {workspace_hash}")
                     else:
                         logger.debug(f"Session end for unknown workspace: {workspace_hash}")
+
+                # Call the on_session_end callback if registered (outside the lock)
+                if removed and self.on_session_end:
+                    try:
+                        await self.on_session_end(workspace_hash)
+                    except Exception as e:
+                        logger.error(f"Error in on_session_end callback: {e}", exc_info=True)
                 return True  # Successfully processed
 
             return False  # Unknown event type

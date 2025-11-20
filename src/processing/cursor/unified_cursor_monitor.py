@@ -427,13 +427,15 @@ class WorkspaceMonitor:
         db_path: Path,
         redis_client: redis.Redis,
         config: CursorMonitorConfig,
-        itemtable_keys: list
+        itemtable_keys: list,
+        external_session_id: Optional[str] = None
     ):
         self.workspace_hash = workspace_hash
         self.db_path = db_path
         self.redis_client = redis_client
         self.config = config
         self.itemtable_keys = itemtable_keys
+        self.external_session_id = external_session_id
 
         self.connection = None
         self.event_queuer = EventQueuer(redis_client)
@@ -509,7 +511,8 @@ class WorkspaceMonitor:
                         self.workspace_hash,
                         "workspace",
                         "ItemTable",
-                        key
+                        key,
+                        self.external_session_id
                     )
 
             elif key == "aiService.prompts" and isinstance(data, list):
@@ -526,18 +529,37 @@ class WorkspaceMonitor:
                         self.workspace_hash,
                         "workspace",
                         "ItemTable",
-                        key
+                        key,
+                        self.external_session_id
                     )
 
             elif key == "composer.composerData":
-                # Extract composer with nested bubbles
-                events = self.composer_extractor.extract_composer_events(
-                    data,
-                    self.workspace_hash,
-                    "workspace",
-                    "ItemTable",
-                    key
-                )
+                # Handle workspace composer data structure
+                if isinstance(data, dict) and "allComposers" in data:
+                    # Workspace storage has allComposers array
+                    all_composers = data.get("allComposers", [])
+                    for composer in all_composers:
+                        if isinstance(composer, dict):
+                            # Extract each composer individually
+                            composer_events = self.composer_extractor.extract_composer_events(
+                                composer,
+                                self.workspace_hash,
+                                "workspace",
+                                "ItemTable",
+                                key,
+                                self.external_session_id
+                            )
+                            events.extend(composer_events)
+                else:
+                    # Single composer object (from global database)
+                    events = self.composer_extractor.extract_composer_events(
+                        data,
+                        self.workspace_hash,
+                        "workspace",
+                        "ItemTable",
+                        key,
+                        self.external_session_id
+                    )
 
             elif key == "workbench.backgroundComposer.workspacePersistentData":
                 # Extract background composer
@@ -546,7 +568,8 @@ class WorkspaceMonitor:
                     self.workspace_hash,
                     "workspace",
                     "ItemTable",
-                    key
+                    key,
+                    self.external_session_id
                 )
                 events = [event]
 
@@ -557,25 +580,31 @@ class WorkspaceMonitor:
                     self.workspace_hash,
                     "workspace",
                     "ItemTable",
-                    key
+                    key,
+                    self.external_session_id
                 )
                 events = [event]
 
             else:
                 # Generic event for other keys
+                metadata = {
+                    "storage_level": "workspace",
+                    "database_table": "ItemTable",
+                    "item_key": key,
+                    "workspace_hash": self.workspace_hash,
+                    "source": "workspace_monitor",
+                }
+                if self.external_session_id:
+                    metadata["external_session_id"] = self.external_session_id
+
                 event = {
                     "version": "0.1.0",
                     "hook_type": "DatabaseTrace",
                     "event_type": "other",
                     "event_id": str(uuid.uuid4()),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "metadata": {
-                        "storage_level": "workspace",
-                        "database_table": "ItemTable",
-                        "item_key": key,
-                        "workspace_hash": self.workspace_hash,
-                        "source": "workspace_monitor",
-                    },
+                    "platform": "cursor",  # Explicitly set platform
+                    "metadata": metadata,
                     "payload": {
                         "extracted_fields": {},
                         "full_data": data
@@ -862,13 +891,20 @@ class UnifiedCursorMonitor:
             logger.warning(f"Database not found for workspace {workspace_hash}")
             return
 
-        # Create workspace monitor
+        # Extract session_id from session_info
+        external_session_id = (
+            session_info.get("external_session_id") or
+            session_info.get("session_id")
+        )
+
+        # Create workspace monitor with session_id
         monitor = WorkspaceMonitor(
             workspace_hash=workspace_hash,
             db_path=db_path,
             redis_client=self.redis_client,
             config=self.config,
-            itemtable_keys=self.workspace_itemtable_keys
+            itemtable_keys=self.workspace_itemtable_keys,
+            external_session_id=external_session_id
         )
         await monitor.connect()
         self.workspace_monitors[workspace_hash] = monitor
@@ -929,19 +965,62 @@ class UnifiedCursorMonitor:
         cache_key = f"db_path:{workspace_hash}"
         cached = await self.smart_cache.get(cache_key)
         if cached:
-            return Path(cached)
+            db_path = Path(cached)
+            if db_path.exists():
+                return db_path
 
         # Try workspace mapper first
         mapper = WorkspaceMapper(self.session_monitor)
-        mapping = mapper.get_mapping(workspace_hash)
+        db_path = await mapper.find_database(workspace_hash, workspace_path)
 
-        if mapping and mapping.get("db_path"):
-            db_path = Path(mapping["db_path"])
-            if db_path.exists():
-                await self.smart_cache.set(cache_key, str(db_path))
-                return db_path
+        if db_path and db_path.exists():
+            await self.smart_cache.set(cache_key, str(db_path))
+            return db_path
 
-        # Try workspace path if provided
+        # Check Cursor workspace storage
+        # ~/Library/Application Support/Cursor/User/workspaceStorage/{uuid}/state.vscdb
+        cursor_storage = Path.home() / "Library" / "Application Support" / "Cursor" / "User" / "workspaceStorage"
+        if cursor_storage.exists():
+            # Try to find the right workspace directory
+            best_match = None
+            best_mtime = 0
+
+            for workspace_dir in cursor_storage.iterdir():
+                if workspace_dir.is_dir():
+                    state_db = workspace_dir / "state.vscdb"
+                    if state_db.exists():
+                        # Check if workspace.json matches our workspace path
+                        workspace_json = workspace_dir / "workspace.json"
+                        if workspace_json.exists() and workspace_path:
+                            try:
+                                import json
+                                with open(workspace_json) as f:
+                                    data = json.load(f)
+                                    folder = data.get("folder", "")
+                                    # Remove file:// prefix if present
+                                    if folder.startswith("file://"):
+                                        folder = folder[7:]
+                                    # Check if paths match
+                                    if workspace_path == folder or workspace_path in folder or folder in workspace_path:
+                                        await self.smart_cache.set(cache_key, str(state_db))
+                                        logger.info(f"Found workspace DB at {state_db} (matched by path)")
+                                        return state_db
+                            except Exception as e:
+                                logger.debug(f"Could not read workspace.json: {e}")
+
+                        # Track most recent as fallback
+                        mtime = state_db.stat().st_mtime
+                        if mtime > best_mtime:
+                            best_mtime = mtime
+                            best_match = state_db
+
+            # Use most recent database as fallback
+            if best_match:
+                await self.smart_cache.set(cache_key, str(best_match))
+                logger.info(f"Using most recent workspace DB at {best_match}")
+                return best_match
+
+        # Fallback: Try workspace path .vscode directory (legacy)
         if workspace_path:
             workspace_dir = Path(workspace_path)
 
@@ -958,4 +1037,5 @@ class UnifiedCursorMonitor:
                     await self.smart_cache.set(cache_key, str(vscode_db))
                     return vscode_db
 
+        logger.warning(f"Could not find workspace database for {workspace_hash} at path {workspace_path}")
         return None

@@ -336,6 +336,49 @@ class CursorEventProcessor:
         self.running = False
         logger.info("Stopping Cursor event processor")
 
+    def _should_process_event(self, event: dict) -> bool:
+        """
+        Check if this event should be processed by Cursor writer.
+
+        Filter criteria:
+        1. Platform must be "cursor" OR
+        2. Source must be from Cursor monitors OR
+        3. Has workspace_hash from Cursor hooks
+        """
+        platform = event.get("platform", "")
+        metadata = event.get("metadata", {})
+        source = metadata.get("source", "")
+
+        # Cursor-specific sources from UnifiedCursorMonitor
+        cursor_sources = [
+            "workspace_monitor",
+            "composer_extractor",
+            "generation_extractor",
+            "bubble_extractor",
+            "agent_mode_extractor",
+            "background_composer_extractor",
+            "prompt_extractor",
+            "capability_extractor",
+            "unified_monitor",
+            "user_level_listener"
+        ]
+
+        # Check if it's a Cursor event
+        is_cursor = (
+            platform == "cursor" or
+            source in cursor_sources or
+            (metadata.get("workspace_hash") and not event.get("sessionId"))  # Cursor hooks have workspace_hash but not sessionId
+        )
+
+        # Explicitly exclude Claude Code events
+        is_claude = (
+            platform == "claude_code" or
+            source in ["jsonl_monitor", "transcript_monitor", "claude_session_monitor"] or
+            event.get("sessionId", "").startswith("661360c4")  # Claude session IDs
+        )
+
+        return is_cursor and not is_claude
+
     async def _process_loop(self):
         """
         Main processing loop with proper ACK handling.
@@ -378,21 +421,37 @@ class CursorEventProcessor:
         successful_ids = []
         failed_ids = []
 
-        # Extract event data for batch processing
-        event_data_list = [event for _, event in events]
+        # Filter events by platform - only process Cursor events
+        cursor_events = []
+        skipped_ids = []
 
-        try:
-            # Process the batch (write to database)
-            written = await self.db_writer.write_events(event_data_list)
+        for entry_id, event in events:
+            if self._should_process_event(event):
+                cursor_events.append((entry_id, event))
+            else:
+                # Skip non-Cursor events but still ACK them
+                skipped_ids.append(entry_id)
+                logger.debug(f"Skipping non-Cursor event: {event.get('event_type', 'unknown')}")
 
-            if written > 0:
-                # All events processed successfully
-                successful_ids = [entry_id for entry_id, _ in events]
+        if cursor_events:
+            # Extract event data for batch processing
+            event_data_list = [event for _, event in cursor_events]
 
-        except Exception as e:
-            logger.error(f"Failed to process event batch: {e}")
-            # All events failed, they remain in PEL for retry
-            failed_ids = [entry_id for entry_id, _ in events]
+            try:
+                # Process the batch (write to database)
+                written = await self.db_writer.write_events(event_data_list)
+
+                if written > 0:
+                    # All events processed successfully
+                    successful_ids = [entry_id for entry_id, _ in cursor_events]
+
+            except Exception as e:
+                logger.error(f"Failed to process event batch: {e}")
+                # All events failed, they remain in PEL for retry
+                failed_ids = [entry_id for entry_id, _ in cursor_events]
+
+        # ACK skipped events (they were successfully processed by not writing them)
+        successful_ids.extend(skipped_ids)
 
         # ACK successful events
         if successful_ids:
