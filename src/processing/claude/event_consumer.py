@@ -17,8 +17,8 @@ from typing import Dict, List, Any, Optional, Set
 from collections import deque
 import redis
 
-from ..fast_path.batch_manager import BatchManager
-from ..fast_path.cdc_publisher import CDCPublisher
+from ..common.batch_manager import BatchManager
+from ..common.cdc_publisher import CDCPublisher
 from .raw_traces_writer import ClaudeRawTracesWriter
 
 logger = logging.getLogger(__name__)
