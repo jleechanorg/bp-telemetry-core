@@ -9,6 +9,7 @@ Orchestrates fast path consumer, database initialization, and graceful shutdown.
 """
 
 import logging
+import os
 import signal
 import sys
 import threading
@@ -60,7 +61,8 @@ class TelemetryServer:
         """
         self.config = config or Config()
         self.db_path = db_path or str(Path.home() / ".blueplane" / "telemetry.db")
-        
+        self.pid_file = Path.home() / ".blueplane" / "server.pid"
+
         self.sqlite_client: Optional[SQLiteClient] = None
         self.sqlite_writer: Optional[SQLiteBatchWriter] = None
         self.redis_client: Optional[redis.Redis] = None
@@ -79,6 +81,54 @@ class TelemetryServer:
         self.claude_timeout_manager: Optional[SessionTimeoutManager] = None
         self.running = False
         self.monitor_threads: list[threading.Thread] = []
+
+    def _acquire_pid_lock(self) -> None:
+        """
+        Acquire PID lock to ensure only one server instance runs.
+
+        Raises:
+            RuntimeError: If another server instance is already running
+        """
+        if self.pid_file.exists():
+            # Read existing PID
+            try:
+                existing_pid = int(self.pid_file.read_text().strip())
+
+                # Check if process is still running
+                try:
+                    os.kill(existing_pid, 0)  # Signal 0 just checks if process exists
+                    # Process exists - another server is running
+                    raise RuntimeError(
+                        f"Server already running with PID {existing_pid}. "
+                        f"If this is incorrect, remove {self.pid_file} and try again."
+                    )
+                except OSError:
+                    # Process doesn't exist - stale PID file
+                    logger.warning(f"Removing stale PID file (PID {existing_pid} not found)")
+                    self.pid_file.unlink()
+            except ValueError:
+                # Invalid PID file content - remove it
+                logger.warning("Removing invalid PID file")
+                self.pid_file.unlink()
+
+        # Write our PID
+        self.pid_file.parent.mkdir(parents=True, exist_ok=True)
+        self.pid_file.write_text(str(os.getpid()))
+        logger.info(f"Acquired PID lock: {os.getpid()}")
+
+    def _release_pid_lock(self) -> None:
+        """Release PID lock by removing PID file."""
+        if self.pid_file.exists():
+            try:
+                # Verify it's our PID before removing
+                pid = int(self.pid_file.read_text().strip())
+                if pid == os.getpid():
+                    self.pid_file.unlink()
+                    logger.info(f"Released PID lock: {os.getpid()}")
+                else:
+                    logger.warning(f"PID file contains different PID ({pid} vs {os.getpid()}), not removing")
+            except Exception as e:
+                logger.error(f"Error releasing PID lock: {e}")
 
     def _initialize_database(self) -> None:
         """Initialize SQLite database and schema."""
@@ -384,6 +434,9 @@ class TelemetryServer:
         logger.info("Starting Blueplane Telemetry Server...")
 
         try:
+            # Acquire PID lock to ensure single instance
+            self._acquire_pid_lock()
+
             # Initialize components
             self._initialize_database()
             self._initialize_redis()
@@ -657,6 +710,9 @@ class TelemetryServer:
         # Close Redis connection
         if self.redis_client:
             self.redis_client.close()
+
+        # Release PID lock
+        self._release_pid_lock()
 
         logger.info("Server stopped")
 

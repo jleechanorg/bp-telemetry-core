@@ -411,6 +411,9 @@ def create_claude_indexes(client: SQLiteClient) -> None:
         client: SQLiteClient instance
     """
     indexes = [
+        # Unique constraint to prevent duplicates (external_id, uuid)
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_claude_unique_event ON claude_raw_traces(external_id, uuid);",
+
         # Primary query patterns
         "CREATE INDEX IF NOT EXISTS idx_claude_session_time ON claude_raw_traces(external_id, timestamp);",
         "CREATE INDEX IF NOT EXISTS idx_claude_event_type_time ON claude_raw_traces(event_type, timestamp);",
