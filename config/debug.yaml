@@ -1,0 +1,227 @@
+# Copyright © 2025 Sierra Labs LLC
+# SPDX-License-Identifier: AGPL-3.0-only
+# License-Filename: LICENSE
+
+# Blueplane Telemetry Core - Debug Configuration
+#
+# This configuration extends main.yaml with debug-specific settings.
+# Use this for development, troubleshooting, and testing.
+#
+# To use: BP_CONFIG_MODE=debug bp-server
+#         or: export BP_CONFIG_MODE=debug && bp-server
+#
+# WARNING: This configuration may reduce performance and increase
+#          disk/memory usage. Do not use in production.
+
+# Version of this configuration format
+version: "1.0"
+
+# Extends main.yaml with these overrides
+extends: "main.yaml"
+
+# Enhanced logging for debugging
+logging:
+  level: "DEBUG"
+  format: "text"  # More readable for development
+  include_context: true
+  include_timestamps: true
+  include_tracebacks: true
+
+  # Log output
+  handlers:
+    console:
+      enabled: true
+      level: "DEBUG"
+      colorize: true
+
+    file:
+      enabled: true
+      level: "DEBUG"
+      path: "~/.blueplane/logs/debug.log"
+      max_bytes: 52428800  # 50MB for debug logs
+      backup_count: 10
+
+  # Detailed per-module logging
+  loggers:
+    "src.processing": "DEBUG"
+    "src.capture": "DEBUG"
+    "src.processing.claude_code": "DEBUG"
+    "src.processing.cursor": "DEBUG"
+    "src.processing.database": "DEBUG"
+    "redis": "INFO"  # Redis can be noisy
+    "aiosqlite": "INFO"
+
+# Processing pipeline - debug settings
+processing:
+  # Fast path with more verbose logging
+  fast_path:
+    enabled: true
+    batch_size: 10  # Smaller batches for easier debugging
+    batch_timeout_ms: 1000  # Longer timeout to see batches
+    max_queue_size: 1000
+    log_every_batch: true  # Log each batch processed
+
+  # Slow path with single workers for easier debugging
+  slow_path:
+    enabled: true
+    workers:
+      metrics:
+        count: 1  # Single worker
+        batch_size: 5
+        log_every_event: true
+      conversations:
+        count: 1  # Single worker
+        batch_size: 5
+        log_every_event: true
+      insights:
+        count: 0  # Disabled for debugging
+
+  # More frequent polling for testing
+  platforms:
+    claude_code:
+      enabled: true
+      transcript_monitor:
+        enabled: true
+        poll_interval_seconds: 2  # More frequent polling
+        jsonl_monitor:
+          enabled: true
+          batch_size: 10
+          log_every_line: false  # Set to true for extreme verbosity
+
+    cursor:
+      enabled: true
+      database_monitor:
+        enabled: true
+        poll_interval_seconds: 10  # More frequent polling
+        log_queries: true  # Log SQL queries
+      session_timeout_seconds: 600  # 10 minutes for testing
+
+# Database - debug settings
+database:
+  sqlite:
+    journal_mode: "WAL"
+    synchronous: "FULL"  # Safer for debugging
+    cache_size: 5000
+    temp_store: "MEMORY"
+    busy_timeout: 10000  # Longer timeout
+
+  # Disable compression for easier inspection
+  compression:
+    enabled: false  # Easier to read raw data
+    algorithm: "zlib"
+    level: 1  # Fastest compression if enabled
+
+# Redis with more aggressive timeouts
+redis:
+  connection_pool:
+    max_connections: 5  # Fewer connections
+    socket_timeout: 10.0  # Longer timeout for debugging
+    socket_connect_timeout: 5.0
+    retry_on_timeout: true
+    health_check_interval: 10  # More frequent checks
+
+# Streams with smaller batches
+streams:
+  message_queue:
+    name: "telemetry:events:debug"  # Separate debug stream
+    consumer_group: "processors_debug"
+    consumer_name_prefix: "debug-fast-path"
+    max_length: 1000  # Smaller queue
+    trim_approximate: true
+    block_ms: 5000  # Longer block for debugging
+    count: 10  # Smaller batches
+    retry_timeout_ms: 60000  # 1 minute
+
+  cdc:
+    name: "cdc:events:debug"
+    consumer_group: "workers_debug"
+    consumer_name_prefix: "debug-worker"
+    max_length: 1000
+    trim_approximate: true
+    block_ms: 5000
+    count: 5
+    retry_timeout_ms: 60000
+
+# Privacy - more permissive for debugging
+privacy:
+  mode: "development"  # Capture more data
+  hash_file_paths: false  # See actual paths
+  hash_workspace: false
+  opt_out: []  # Capture everything
+  sanitization:
+    enabled: false  # Don't redact in debug mode
+
+# Monitoring with more aggressive checks
+monitoring:
+  enabled: true
+  health_check_interval_seconds: 10  # More frequent
+
+  queue_depth:
+    warning_threshold: 100  # Lower thresholds
+    critical_threshold: 500
+
+  lag:
+    warning_ms: 5000   # 5 seconds
+    critical_ms: 15000  # 15 seconds
+
+  # Detailed metrics
+  metrics:
+    enabled: true
+    export_interval_seconds: 10  # More frequent
+    include_internal_metrics: true
+
+# Feature flags - enable experimental features
+features:
+  fast_path_enabled: true
+  slow_path_enabled: true
+  metrics_derivation_enabled: true
+  conversation_reconstruction_enabled: true
+  ai_insights_enabled: true  # Enable for testing
+
+  # Debug-specific features
+  debug_mode: true
+  trace_all_events: true
+  validate_events: true  # Strict validation
+  profile_performance: true
+
+# Test mode settings
+test_mode:
+  enabled: true
+  generate_test_events: false  # Set to true for synthetic data
+  test_event_interval_ms: 1000
+  test_event_count: 100
+
+# Performance tuning - relaxed for debugging
+performance:
+  async_io:
+    max_workers: 2  # Fewer workers
+    queue_size: 100
+
+  db_pool:
+    min_connections: 1
+    max_connections: 3  # Fewer connections
+
+  memory:
+    batch_cache_mb: 50  # Smaller caches
+    event_buffer_mb: 25
+
+# Debug utilities
+debug:
+  # Dump events to disk for inspection
+  dump_events:
+    enabled: true
+    path: "~/.blueplane/debug/events"
+    format: "json"  # json or msgpack
+    max_files: 100
+
+  # Profiling
+  profiling:
+    enabled: true
+    profile_path: "~/.blueplane/debug/profiles"
+    sample_rate: 0.1  # Profile 10% of operations
+
+  # Error tracking
+  error_tracking:
+    detailed_tracebacks: true
+    capture_locals: true  # Include local variables in traces
+    max_frames: 50

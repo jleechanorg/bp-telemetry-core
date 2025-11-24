@@ -1,0 +1,270 @@
+# Copyright © 2025 Sierra Labs LLC
+# SPDX-License-Identifier: AGPL-3.0-only
+# License-Filename: LICENSE
+
+# Blueplane Telemetry Core - Main Configuration
+#
+# This is the primary configuration file for Blueplane Telemetry Core.
+# It defines settings for all system components.
+#
+# Environment Variable Overrides:
+#   Many settings can be overridden with environment variables.
+#   See docs/ENVIRONMENT_VARIABLES.md for complete list.
+#   Common overrides: BP_CONFIG_PATH, WORKSPACE_DIR, LOG_LEVEL, REDIS_HOST
+
+# Version of this configuration format
+version: "1.0"
+
+# System paths and directories
+paths:
+  # Data storage directory
+  # Override with: BP_DATA_DIR or BLUEPLANE_DATA_DIR
+  data_dir: "~/.blueplane"
+
+  # Workspace root directory for monitoring
+  # Override with: WORKSPACE_DIR or WORKSPACE_ROOT
+  workspace_dir: "~/Dev"
+
+  # Claude Code projects directory
+  # Override with: CLAUDE_PROJECTS_DIR
+  claude_projects_dir: "~/.claude/projects"
+
+  # Cursor application data directory (macOS)
+  # Override with: CURSOR_DATA_DIR
+  cursor_data_dir: "~/Library/Application Support/Cursor"
+
+# Redis configuration
+redis:
+  # Connection settings
+  # Override with: REDIS_HOST, REDIS_PORT, REDIS_DB
+  host: localhost
+  port: 6379
+  db: 0
+
+  # Connection pool
+  connection_pool:
+    max_connections: 10
+    socket_timeout: 5.0
+    socket_connect_timeout: 2.0
+    retry_on_timeout: true
+    health_check_interval: 30
+
+  # Performance tuning
+  decode_responses: false
+  socket_keepalive: true
+  socket_keepalive_options:
+    TCP_KEEPIDLE: 60
+    TCP_KEEPINTVL: 10
+    TCP_KEEPCNT: 3
+
+# Stream configurations
+streams:
+  # Main message queue from Layer 1 capture
+  message_queue:
+    name: "telemetry:events"
+    consumer_group: "processors"
+    consumer_name_prefix: "fast-path"
+    max_length: 10000
+    trim_approximate: true
+    block_ms: 1000
+    count: 100
+    retry_timeout_ms: 300000  # 5 minutes
+
+  # Dead Letter Queue for failed messages
+  dlq:
+    name: "telemetry:dlq"
+    retention_days: 7
+    max_length: 1000
+    trim_approximate: true
+
+  # Change Data Capture stream for async workers
+  cdc:
+    name: "cdc:events"
+    consumer_group: "workers"
+    consumer_name_prefix: "worker"
+    max_length: 100000
+    trim_approximate: true
+    block_ms: 1000
+    count: 10
+    retry_timeout_ms: 600000  # 10 minutes
+
+# Database configuration
+database:
+  # SQLite database path
+  # Override with: SQLITE_PATH or BP_DATABASE_PATH
+  sqlite_path: "~/.blueplane/telemetry.db"
+
+  # SQLite settings
+  sqlite:
+    journal_mode: "WAL"
+    synchronous: "NORMAL"
+    cache_size: 10000
+    temp_store: "MEMORY"
+    busy_timeout: 5000  # milliseconds
+
+  # Compression settings for raw traces
+  compression:
+    enabled: true
+    algorithm: "zlib"
+    level: 6  # 1-9, higher = better compression but slower
+
+  # Data retention
+  retention:
+    raw_traces_days: 90
+    conversations_days: 365
+    metrics_days: 90
+
+# Processing pipeline configuration
+processing:
+  # Fast path settings
+  fast_path:
+    enabled: true
+    batch_size: 100
+    batch_timeout_ms: 100
+    max_queue_size: 10000
+
+  # Slow path workers
+  slow_path:
+    enabled: true
+    workers:
+      metrics:
+        count: 2
+        batch_size: 10
+      conversations:
+        count: 2
+        batch_size: 10
+      insights:
+        count: 1
+        batch_size: 5
+
+  # Platform-specific processing
+  platforms:
+    claude_code:
+      enabled: true
+      transcript_monitor:
+        enabled: true
+        poll_interval_seconds: 5
+        jsonl_monitor:
+          enabled: true
+          batch_size: 100
+
+    cursor:
+      enabled: true
+      database_monitor:
+        enabled: true
+        poll_interval_seconds: 30
+      session_timeout_seconds: 3600  # 1 hour
+
+# Privacy settings
+privacy:
+  # Privacy mode: strict, balanced, or development
+  # strict: Maximum privacy, minimal data
+  # balanced: Reasonable privacy with useful analytics
+  # development: More detailed data for debugging
+  mode: "strict"
+
+  # Data hashing
+  hash_file_paths: true
+  hash_workspace: true
+  hash_algorithm: "sha256"
+  hash_truncate_length: 16
+
+  # Opt-out categories (data not captured)
+  opt_out: []
+    # - file_paths       # Don't capture file paths
+    # - error_messages   # Don't capture error text
+    # - model_responses  # Don't capture AI responses
+
+  # Data sanitization
+  sanitization:
+    enabled: true
+    redact_secrets: true
+    redact_patterns:
+      - "api[_-]?key"
+      - "password"
+      - "token"
+      - "secret"
+
+# Monitoring and health checks
+monitoring:
+  enabled: true
+  health_check_interval_seconds: 60
+
+  # Queue depth thresholds
+  queue_depth:
+    warning_threshold: 5000
+    critical_threshold: 8000
+
+  # Lag thresholds
+  lag:
+    warning_ms: 10000   # 10 seconds
+    critical_ms: 60000  # 1 minute
+
+  # Metrics reporting
+  metrics:
+    enabled: true
+    export_interval_seconds: 60
+
+# Logging configuration
+# Override with: LOG_LEVEL, BP_LOG_LEVEL
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: "json"  # json or text
+  include_context: true
+  include_timestamps: true
+
+  # Log output
+  handlers:
+    console:
+      enabled: true
+      level: "INFO"
+
+    file:
+      enabled: true
+      level: "DEBUG"
+      path: "~/.blueplane/logs/blueplane.log"
+      max_bytes: 10485760  # 10MB
+      backup_count: 5
+      rotation: "size"  # size or time
+
+  # Per-module log levels
+  loggers:
+    "src.processing": "INFO"
+    "src.capture": "INFO"
+    "redis": "WARNING"
+    "aiosqlite": "WARNING"
+
+# Feature flags
+features:
+  # Enable/disable major features
+  fast_path_enabled: true
+  slow_path_enabled: true
+  metrics_derivation_enabled: true
+  conversation_reconstruction_enabled: true
+  ai_insights_enabled: false  # Experimental
+
+  # Platform support
+  claude_code_support: true
+  cursor_support: true
+
+  # Layer 3 interfaces
+  cli_enabled: true
+  mcp_server_enabled: false  # Future
+  web_dashboard_enabled: false  # Future
+
+# Performance tuning
+performance:
+  # Async processing
+  async_io:
+    max_workers: 4
+    queue_size: 1000
+
+  # Database connection pooling
+  db_pool:
+    min_connections: 2
+    max_connections: 10
+
+  # Memory limits (approximate)
+  memory:
+    batch_cache_mb: 100
+    event_buffer_mb: 50
