@@ -1,0 +1,113 @@
+# Copyright © 2025 Sierra Labs LLC
+# SPDX-License-Identifier: AGPL-3.0-only
+# License-Filename: LICENSE
+
+# Docker Compose configuration for Blueplane Telemetry Core
+#
+# Services:
+#   - redis: Message queue and metrics storage
+#   - blueplane-server: Processing server for telemetry events
+#
+# Usage:
+#   docker-compose up -d              # Start services in background
+#   docker-compose down               # Stop services
+#   docker-compose logs -f            # View logs
+#   docker-compose ps                 # Check status
+
+version: '3.8'
+
+services:
+  # Redis - Message Queue and Metrics Storage
+  redis:
+    image: redis:7-alpine
+    container_name: blueplane-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --appendfsync everysec
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - blueplane-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Blueplane Processing Server
+  blueplane-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    container_name: blueplane-server
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      # Data storage (read/write)
+      - ${BLUEPLANE_DATA_DIR:-~/.blueplane}:/data/blueplane:rw
+
+      # Claude Code monitoring (read-only)
+      # Mounted if directory exists on host
+      - ${CLAUDE_PROJECTS_DIR:-~/.claude/projects}:/capture/claude/projects:ro
+
+      # Cursor monitoring (read-only)
+      # macOS path - adjust for other platforms
+      - ${CURSOR_DATA_DIR:-~/Library/Application Support/Cursor}:/capture/cursor:ro
+
+      # Workspace directory (configurable, read-only)
+      - ${WORKSPACE_DIR:-~/Dev}:/workspace:ro
+    environment:
+      # Redis connection
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+
+      # Data directories
+      - BLUEPLANE_DATA_DIR=/data/blueplane
+      - CLAUDE_PROJECTS_DIR=/capture/claude/projects
+      - CURSOR_DATA_DIR=/capture/cursor
+      - WORKSPACE_ROOT=/workspace
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PYTHONUNBUFFERED=1
+
+      # Optional: Python optimization
+      - PYTHONDONTWRITEBYTECODE=1
+    networks:
+      - blueplane-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Optional: Resource limits
+    # Uncomment and adjust based on your system
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2.0'
+    #       memory: 2G
+    #     reservations:
+    #       cpus: '0.5'
+    #       memory: 512M
+
+# Named volumes
+volumes:
+  redis-data:
+    driver: local
+    name: blueplane-redis-data
+
+# Network
+networks:
+  blueplane-network:
+    driver: bridge
+    name: blueplane-network

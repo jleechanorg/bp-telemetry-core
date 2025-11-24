@@ -1,0 +1,64 @@
+# Copyright © 2025 Sierra Labs LLC
+# SPDX-License-Identifier: AGPL-3.0-only
+# License-Filename: LICENSE
+
+# Dockerfile for Blueplane Telemetry Processing Server
+FROM python:3.11-slim
+
+LABEL maintainer="Sierra Labs LLC <team@blueplane.ai>"
+LABEL description="Blueplane Telemetry Core - Processing Server"
+LABEL version="0.1.0"
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app user (non-root for security)
+RUN useradd -m -u 1000 blueplane
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files first for better layer caching
+COPY pyproject.toml ./
+COPY requirements.txt ./
+COPY README.md ./
+COPY LICENSE ./
+
+# Install Python dependencies
+# Use --no-cache-dir to reduce image size
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy application source code
+COPY src/ ./src/
+COPY config/ ./config/
+
+# Create data directories
+RUN mkdir -p /data/blueplane && \
+    chown -R blueplane:blueplane /app /data/blueplane
+
+# Switch to non-root user
+USER blueplane
+
+# Expose port for health checks (if implemented)
+EXPOSE 8000
+
+# Health check
+# Note: This assumes a health endpoint will be added to the server
+# For now, we'll use a simple Python process check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+  CMD pgrep -f "processing.server" || exit 1
+
+# Set environment variables with defaults
+ENV PYTHONUNBUFFERED=1 \
+    REDIS_HOST=redis \
+    REDIS_PORT=6379 \
+    BLUEPLANE_DATA_DIR=/data/blueplane \
+    LOG_LEVEL=INFO
+
+# Entry point - run the processing server
+CMD ["bp-server"]
