@@ -16,6 +16,7 @@ import Database from "better-sqlite3";
 import chokidar from "chokidar";
 import { QueueWriter } from "./queueWriter";
 import { TelemetryEvent } from "./types";
+import { ExtensionConfig, CURSOR_WORKSPACE_STORAGE_PATHS } from "./config";
 
 export class DatabaseMonitor {
   private dbPath: string | null = null;
@@ -28,7 +29,10 @@ export class DatabaseMonitor {
     | (() => { sessionId: string; workspaceHash: string } | null)
     | null = null;
 
-  constructor(private queueWriter: QueueWriter) {
+  constructor(
+    private queueWriter: QueueWriter,
+    private config: ExtensionConfig
+  ) {
     // getSessionInfo will be set via setSessionInfoGetter after initialization
   }
 
@@ -91,9 +95,9 @@ export class DatabaseMonitor {
         // Continue with polling only
       }
 
-      // Start polling (backup method, every 30 seconds)
+      // Start polling (backup method)
       try {
-        this.startPolling(30000);
+        this.startPolling(this.config.dbMonitorPollInterval);
       } catch (pollError) {
         console.error("Failed to start polling:", pollError);
         // If both watcher and polling fail, return false
@@ -141,26 +145,15 @@ export class DatabaseMonitor {
   private locateCursorDatabase(): string | null {
     const homeDir = os.homedir();
 
-    // macOS path
-    const macPath = path.join(
-      homeDir,
-      "Library/Application Support/Cursor/User/workspaceStorage"
-    );
-
-    // Linux path
-    const linuxPath = path.join(
-      homeDir,
-      ".config/Cursor/User/workspaceStorage"
-    );
-
-    // Windows path
-    const winPath = path.join(
-      homeDir,
-      "AppData/Roaming/Cursor/User/workspaceStorage"
-    );
+    // Platform-specific paths
+    const paths = [
+      path.join(homeDir, CURSOR_WORKSPACE_STORAGE_PATHS.macOS),
+      path.join(homeDir, CURSOR_WORKSPACE_STORAGE_PATHS.linux),
+      path.join(homeDir, CURSOR_WORKSPACE_STORAGE_PATHS.windows),
+    ];
 
     // Try each platform path
-    for (const basePath of [macPath, linuxPath, winPath]) {
+    for (const basePath of paths) {
       if (fs.existsSync(basePath)) {
         // Find workspace directories
         const workspaces = fs.readdirSync(basePath);
@@ -186,8 +179,8 @@ export class DatabaseMonitor {
       persistent: true,
       ignoreInitial: true,
       awaitWriteFinish: {
-        stabilityThreshold: 100,
-        pollInterval: 100,
+        stabilityThreshold: this.config.fileWatcherStabilityThreshold,
+        pollInterval: this.config.fileWatcherPollInterval,
       },
     });
 
