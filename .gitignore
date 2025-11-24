@@ -30,7 +30,6 @@ dump.rdb
 *.swp
 *.swo
 *~
-.claude/
 .history/
 
 # OS

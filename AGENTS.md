@@ -8,6 +8,19 @@ License-Filename: LICENSE
 
 This file provides guidance to Claude Code (claude.ai/code) and other AI assistants when working with code in this repository.
 
+## Work Tracking
+
+**IMPORTANT**: Use the `bd` command (beads issue tracker) for tracking all new work instead of markdown todo lists. Create issues for features, bugs, and tasks using:
+
+```bash
+bd create "Task description" -p <priority>
+bd list                    # View open issues
+bd ready                    # Show work-ready issues
+bd complete <issue-id>      # Mark as done
+```
+
+See the beads documentation for full command reference. All development work should be tracked as beads issues.
+
 ## Project Overview
 
 **Blueplane Telemetry Core** is a privacy-first, local-only telemetry and analytics system for AI-assisted coding platforms (Claude Code, Cursor, etc.). All data stays on the developer's machine with zero cloud transmission.
@@ -66,6 +79,7 @@ graph TB
 ```
 
 1. **Capture Layer** (Layer 1)
+
    - Lightweight telemetry capture from IDEs
    - IDE hooks, database monitors, transcript monitors
    - Output: Events to file-based message queue
@@ -77,6 +91,7 @@ graph TB
    - See: [layer1_capture.md](docs/architecture/layer1_capture.md)
 
 2. **Processing Layer** (Layer 2)
+
    - High-performance async event processing
    - Fast path: Zero-read writes, batched inserts
    - Slow path: Async enrichment and metric derivation
@@ -116,6 +131,7 @@ graph TD
 - **Benefits**: Zero-latency ingestion, graceful degradation, eventual consistency
 
 Core implementation:
+
 - Fast path: `src/processing/ingestion/fast_path.py`
 - Slow path: `src/processing/workers/slow_path_worker.py`
 - CDC stream: `src/processing/change_data_capture.py`
@@ -148,12 +164,14 @@ graph LR
 ### Key Data Types
 
 Core telemetry models (`src/models/`):
+
 - `Event`: Base telemetry event (platform, session_id, timestamp, payload)
 - `ConversationTrace`: Reconstructed conversation with turns
 - `Metric`: Time-series metric (tokens, latency, errors)
 - `SessionContext`: Platform-specific session metadata
 
 Database schemas (`src/processing/database/schemas.py`):
+
 - `raw_traces`: Compressed event storage (Layer 2 only)
 - `conversations`: Processed conversation data (Layer 2 & 3)
 - `metrics`: Aggregated time-series data
@@ -161,12 +179,14 @@ Database schemas (`src/processing/database/schemas.py`):
 ### Database Architecture
 
 **SQLite** (`~/.blueplane/telemetry.db`):
+
 - WAL mode for concurrent reads during writes
 - zlib compression (7-10x) for raw events
 - Table isolation: raw_traces (Layer 2), conversations (Layer 2 & 3)
 - Single file deployment
 
 **Redis** (localhost:6379):
+
 - Streams for message queue with consumer groups
 - PEL (Pending Entries List) for automatic retry
 - Time-series for metrics with automatic aggregation
@@ -177,13 +197,16 @@ See: [layer2_db_architecture.md](docs/architecture/layer2_db_architecture.md)
 ### Platform-Specific Capture Sources
 
 **Claude Code (macOS)**:
+
 - Session transcripts: `~/.claude/projects/<project-hash>/<session-hash>.jsonl`
 - Format: JSONL with conversation turns and tool calls
 - Monitor: File watcher on JSONL append operations
 - See: [CURSOR_RAW_TRACES_CAPTURE.md](docs/CURSOR_RAW_TRACES_CAPTURE.md) for parsing details
 
 **Cursor (macOS)**:
+
 - **User-level database**: `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`
+
   - Table: `cursorDiskKV` (key-value store)
   - Keys: `composerData:{composerId}` (composer metadata)
   - Keys: `bubbleId:{composerId}:{bubbleId}` (conversation bubbles/messages)
@@ -191,6 +214,7 @@ See: [layer2_db_architecture.md](docs/architecture/layer2_db_architecture.md)
   - Contains ~20,000+ entries including all conversation content
 
 - **Workspace-level databases**: `~/Library/Application Support/Cursor/User/workspaceStorage/{uuid}/state.vscdb`
+
   - Table: `ItemTable` (workspace-specific data)
   - Keys: `aiService.generations`, `aiService.prompts`, `composer.composerData`
   - Keys: `workbench.backgroundComposer.workspacePersistentData`, `workbench.agentMode.exitInfo`
@@ -202,6 +226,7 @@ See: [layer2_db_architecture.md](docs/architecture/layer2_db_architecture.md)
 - See: [CURSOR_RAW_TRACES_CAPTURE.md](docs/CURSOR_RAW_TRACES_CAPTURE.md) for complete capture specification
 
 **Additional Platforms**:
+
 - VS Code: Similar to Cursor but at `~/Library/Application Support/Code/`
 - JetBrains IDEs: Plugin-based capture via custom telemetry API
 - Sublime Text: Log file monitoring at `~/Library/Application Support/Sublime Text/`
@@ -245,6 +270,7 @@ python scripts/benchmark_ingestion.py
 - **Privacy tests**: Verify no code content leakage
 
 Test structure:
+
 ```
 tests/
 ├── unit/          # Isolated component tests
@@ -265,17 +291,20 @@ tests/
 ### Performance Requirements
 
 **Fast Path** (Critical):
+
 - <10ms P95 for 100-event batch
 - Zero database reads
 - Batched writes with 100ms timeout
 - Compression before SQLite write
 
 **Slow Path** (Important):
+
 - <5s P95 for metric updates
 - Backpressure monitoring
 - Worker health metrics
 
 **Layer 3** (User-facing):
+
 - <100ms P95 for CLI queries
 - Proper pagination
 - Beautiful Rich terminal output
@@ -283,18 +312,21 @@ tests/
 ## Key Files
 
 ### Documentation
+
 - **CLAUDE.md** - Project instructions and philosophy
 - **README.md** - User-facing documentation
 - **docs/ARCHITECTURE.md** - System overview
 - **docs/architecture/** - Detailed design specs
 
 ### Core Implementation (to be developed)
+
 - **src/capture/** - Layer 1 capture agents
 - **src/processing/** - Layer 2 processing pipeline
 - **src/interfaces/** - Layer 3 user interfaces
 - **src/models/** - Data models and schemas
 
 ### Configuration
+
 - **~/.blueplane/config.yaml** - User configuration
 - **src/config/defaults.py** - Default settings
 
@@ -391,21 +423,25 @@ sqlite3 ~/Library/Application\ Support/Cursor/User/workspaceStorage/*/state.vscd
 ## Common Issues and Solutions
 
 ### High Memory Usage
+
 - Check Redis stream length: `XLEN telemetry:events`
 - Verify slow path workers are running
 - Consider increasing batch size in fast path
 
 ### Slow Queries
+
 - Ensure SQLite indexes are created
 - Check if WAL mode is enabled
 - Verify Layer 3 isn't accessing raw_traces
 
 ### Missing Metrics
+
 - Check CDC stream for backlog
 - Verify slow path workers are healthy
 - Look for errors in DLQ
 
 ### Installation Issues
+
 - Ensure Redis is running locally
 - Check ~/.blueplane/ directory permissions
 - Verify Python 3.8+ is installed
