@@ -9,7 +9,6 @@
 # See config.schema.yaml for complete documentation of all options.
 #
 # User overrides: ~/.blueplane/config.yaml
-# Environment variables: BP_* prefix (e.g., BP_REDIS_HOST, BP_REDIS_PORT)
 # =============================================================================
 
 # =============================================================================
@@ -72,20 +71,24 @@ redis:
 # =============================================================================
 streams:
   # Main event stream from capture layer
-  max_length: 10000
-  block_ms: 1000 # 1 second
-  count: 100
-  retry_timeout_ms: 300000 # 5 minutes
+  message_queue:
+    max_length: 10000
+    block_ms: 1000 # 1 second
+    count: 100
+    retry_timeout_ms: 300000 # 5 minutes
+    trim_approximate: true
 
   dlq:
     retention_days: 7
     max_length: 1000
+    trim_approximate: true
 
   cdc:
     max_length: 100000
     block_ms: 1000
     count: 10
     retry_timeout_ms: 600000 # 10 minutes
+    trim_approximate: true
 
 # =============================================================================
 # TIMEOUTS

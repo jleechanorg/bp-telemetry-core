@@ -31,6 +31,7 @@ class StreamConfig:
     max_length: int = 10000
     block_ms: int = 1000
     count: int = 100
+    trim_approximate: bool = True
 
 
 class Config:
@@ -139,6 +140,7 @@ class Config:
             max_length=stream_data.get("max_length", 10000),
             block_ms=stream_data.get("block_ms", 1000),
             count=stream_data.get("count", 100),
+            trim_approximate=stream_data.get("trim_approximate", True),
         )
 
     def get_monitoring_config(self, section: str) -> Dict[str, Any]:
@@ -154,7 +156,25 @@ class Config:
         monitoring = self._config.get("monitoring", {})
         return monitoring.get(section, {})
 
-    def get(self, key: str, default: Any = None) -> Any:
+    def _expand_path(self, path_value: Any) -> Any:
+        """
+        Expand path strings containing ~ to actual home directory paths.
+
+        Args:
+            path_value: Configuration value (string, Path, or other)
+
+        Returns:
+            Expanded Path object if input was a string path, otherwise original value
+        """
+        if isinstance(path_value, str):
+            # Expand ~ to home directory
+            return Path(path_value).expanduser()
+        elif isinstance(path_value, Path):
+            # Already a Path, just expand it
+            return path_value.expanduser()
+        return path_value
+
+    def get(self, key: str, default: Any = None, expand_path: bool = False) -> Any:
         """
         Get arbitrary configuration value using dot-separated path.
 
@@ -164,9 +184,11 @@ class Config:
         Args:
             key: Dot-separated key path (e.g., "redis.connection.host")
             default: Default value if key not found
+            expand_path: If True, expand ~ in string paths to home directory
 
         Returns:
-            Configuration value or default
+            Configuration value or default. If expand_path=True and value is a path string,
+            returns Path object with expanded home directory.
         """
         parts = key.split(".")
         config = self._config
@@ -180,4 +202,32 @@ class Config:
             else:
                 return default
 
-        return config if config is not None else default
+        result = config if config is not None else default
+        
+        # Expand path if requested
+        if expand_path and result is not None:
+            result = self._expand_path(result)
+        
+        return result
+
+    def get_path(self, key: str, default: Any = None) -> Path:
+        """
+        Get a path configuration value and expand ~ to home directory.
+
+        Convenience method for getting paths that automatically expands ~.
+
+        Args:
+            key: Dot-separated key path (e.g., "paths.database.telemetry_db")
+            default: Default value if key not found (will be expanded if it's a string)
+
+        Returns:
+            Path object with expanded home directory
+
+        Example:
+            >>> config.get_path("paths.database.telemetry_db")
+            Path('/Users/username/.blueplane/telemetry.db')
+        """
+        value = self.get(key, default)
+        if value is None:
+            raise ValueError(f"Path configuration '{key}' not found and no default provided")
+        return self._expand_path(value)

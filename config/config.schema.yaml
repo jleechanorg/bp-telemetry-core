@@ -16,7 +16,6 @@
 # Configuration Hierarchy:
 #   1. config.yaml (this schema) - Default configuration
 #   2. ~/.blueplane/config.yaml - User overrides
-#   3. Environment variables - Runtime overrides (BP_*)
 # =============================================================================
 
 # =============================================================================
@@ -28,7 +27,6 @@ paths:
     type: string
     default: "~/.blueplane"
     description: "Base directory for all Blueplane data"
-    env_override: "BP_HOME"
 
   # Blueplane database paths
   database:
@@ -102,12 +100,10 @@ redis:
     host:
       type: string
       default: "localhost"
-      env_override: "BP_REDIS_HOST"
 
     port:
       type: integer
       default: 6379
-      env_override: "BP_REDIS_PORT"
 
   # Connection pool
   connection_pool:
@@ -165,7 +161,7 @@ redis:
 # =============================================================================
 streams:
   # Main event stream from capture layer
-
+  message_queue:
     max_length:
       type: integer
       default: 10000
@@ -188,6 +184,11 @@ streams:
       unit: milliseconds
       description: "Time before retrying failed messages (5 minutes)"
 
+    trim_approximate:
+      type: boolean
+      default: true
+      description: "Use approximate trimming for better performance"
+
   # Dead letter queue for failed messages
   dlq:
     retention_days:
@@ -198,6 +199,12 @@ streams:
     max_length:
       type: integer
       default: 1000
+      description: "Maximum DLQ stream length"
+
+    trim_approximate:
+      type: boolean
+      default: true
+      description: "Use approximate trimming for better performance"
 
   # Change data capture stream
   cdc:
@@ -209,6 +216,8 @@ streams:
     block_ms:
       type: integer
       default: 1000
+      unit: milliseconds
+      description: "Block time for XREADGROUP"
 
     count:
       type: integer
@@ -220,6 +229,11 @@ streams:
       default: 600000
       unit: milliseconds
       description: "10 minutes before retry"
+
+    trim_approximate:
+      type: boolean
+      default: true
+      description: "Use approximate trimming for better performance"
 
 # =============================================================================
 # TIMEOUTS - All timeout values
@@ -452,7 +466,6 @@ logging:
     type: string
     default: "INFO"
     enum: ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-    env_override: "BP_LOG_LEVEL"
 
   # Context inclusion
   include_context:
@@ -489,13 +502,11 @@ features:
 # =============================================================================
 # Variable Substitution:
 #   - ${section.key} references are resolved at load time
-#   - Environment variables override with BP_ prefix
 #
 # Configuration Precedence (highest to lowest):
-#   1. Environment variables (BP_* prefix)
-#   2. ~/.blueplane/config.yaml (user config)
-#   3. config/config.yaml (default config)
-#   4. Schema defaults (this file)
+#   1. ~/.blueplane/config.yaml (user config)
+#   2. config/config.yaml (default config)
+#   3. Schema defaults (this file)
 #
 # Type Conversions:
 #   - Paths with ~ are expanded to user home directory
