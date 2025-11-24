@@ -99,7 +99,17 @@ class ComposerDataExtractor:
         item_key: str,
         external_session_id: Optional[str] = None
     ) -> dict:
-        """Extract composer-level fields."""
+        """
+        Extract composer-level fields.
+
+        Note: Field availability varies by storage level and Cursor version:
+        - globalStorage: Has unifiedMode, forceMode, status, tokenCount (newer versions)
+        - globalStorage: Does NOT have lastUpdatedAt, isArchived, hasUnreadMessages,
+          totalLinesAdded, totalLinesRemoved, or conversation array
+        - workspace ItemTable: May have different field set
+
+        All fields use .get() for null-safety.
+        """
         metadata = {
             "storage_level": storage_level,
             "workspace_hash": workspace_hash,
@@ -122,17 +132,22 @@ class ComposerDataExtractor:
                 "extracted_fields": {
                     "composer_id": data.get("composerId"),
                     "created_at": data.get("createdAt"),
-                    "last_updated_at": data.get("lastUpdatedAt"),
+                    "last_updated_at": data.get("lastUpdatedAt"),  # May not exist in globalStorage
                     "is_agentic": data.get("isAgentic"),
-                    "is_archived": data.get("isArchived"),
-                    "has_unread_messages": data.get("hasUnreadMessages"),
+                    "is_archived": data.get("isArchived"),  # May not exist in globalStorage
+                    "has_unread_messages": data.get("hasUnreadMessages"),  # May not exist in globalStorage
                     "conversation_count": len(
                         data.get("conversation", []) or
                         data.get("fullConversationHeadersOnly", []) or
                         []
                     ),
-                    "lines_added": data.get("totalLinesAdded") or data.get("linesAdded"),
-                    "lines_removed": data.get("totalLinesRemoved") or data.get("linesRemoved"),
+                    "lines_added": data.get("totalLinesAdded") or data.get("linesAdded"),  # May not exist
+                    "lines_removed": data.get("totalLinesRemoved") or data.get("linesRemoved"),  # May not exist
+                    # Additional fields from globalStorage
+                    "unified_mode": data.get("unifiedMode"),
+                    "force_mode": data.get("forceMode"),
+                    "status": data.get("status"),
+                    "token_count": data.get("tokenCount"),
                 },
                 "full_data": data
             }

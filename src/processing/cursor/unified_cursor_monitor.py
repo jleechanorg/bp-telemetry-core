@@ -630,7 +630,7 @@ class WorkspaceMonitor:
 
 class UserLevelListener:
     """
-    Monitors user-level Cursor database (~/.cursor-tutor/db/6.vscdb).
+    Monitors user-level Cursor database (~/Library/Application Support/Cursor/User/globalStorage/state.vscdb).
     Started once on UnifiedCursorMonitor startup.
     Remains active for entire monitor lifetime.
     """
@@ -669,36 +669,17 @@ class UserLevelListener:
 
         # Initial sync
         await self._sync_composer_data()
+        await self._sync_bubble_data()
 
         logger.info(f"Started user-level listener for {self.db_path}")
 
     async def _find_user_db(self) -> Optional[Path]:
         """Find user-level Cursor database."""
-        # Primary location
-        cursor_dir = Path.home() / ".cursor-tutor"
+        # Mac-only path: ~/Library/Application Support/Cursor/User/globalStorage/state.vscdb
+        db_path = Path.home() / "Library" / "Application Support" / "Cursor" / "User" / "globalStorage" / "state.vscdb"
 
-        # Fallback locations
-        if not cursor_dir.exists():
-            cursor_dir = Path.home() / ".cursor"
-
-        if not cursor_dir.exists():
-            return None
-
-        # Check for database file
-        db_dir = cursor_dir / "db"
-        if not db_dir.exists():
-            return None
-
-        # Try specific version
-        db_path = db_dir / "6.vscdb"
         if db_path.exists():
             return db_path
-
-        # Try numbered versions
-        for i in range(10):
-            candidate = db_dir / f"{i}.vscdb"
-            if candidate.exists():
-                return candidate
 
         return None
 
@@ -706,6 +687,7 @@ class UserLevelListener:
         """Handle user database changes."""
         try:
             await self._sync_composer_data()
+            await self._sync_bubble_data()
         except Exception as e:
             logger.error(f"Error syncing user database: {e}")
 
@@ -771,15 +753,106 @@ class UserLevelListener:
 
     def _extract_composer_fields(self, data: dict) -> dict:
         """Extract relevant fields from composer data."""
-        # Use the extractor to get comprehensive composer events
-        extractor = ComposerDataExtractor()
-        # We'll queue the full events, not just fields
+        # Note: workspaceId does not exist in globalStorage composerData
+        # Workspace correlation must be done via other means
         return {
             "composerId": data.get("composerId"),
-            "workspaceId": data.get("workspaceId"),
             "createdAt": data.get("createdAt"),
-            "lastUpdatedAt": data.get("lastUpdatedAt"),
+            "unifiedMode": data.get("unifiedMode"),
+            "forceMode": data.get("forceMode"),
+            "isAgentic": data.get("isAgentic"),
+            "tokenCount": data.get("tokenCount"),
+            "status": data.get("status"),
         }
+
+    async def _sync_bubble_data(self):
+        """
+        Sync bubble data from globalStorage database.
+        Bubbles are stored in keys matching pattern: bubbleId:{composerId}:{bubbleId}
+        The first UUID is the composerId, providing the link to composers.
+        """
+        if not self.connection:
+            return
+
+        try:
+            # Query bubble data
+            # Note: This gets ALL bubbles. For production, consider pagination or filtering.
+            cursor = await self.connection.execute("""
+                SELECT key, value
+                FROM cursorDiskKV
+                WHERE key LIKE 'bubbleId:%'
+            """)
+
+            rows = await cursor.fetchall()
+
+            for row in rows:
+                key = row["key"]
+                value = row["value"]
+
+                if not value:
+                    continue
+
+                # Parse bubble data
+                try:
+                    bubble_data = json.loads(value)
+                except json.JSONDecodeError:
+                    logger.warning(f"Failed to parse bubble data for key: {key}")
+                    continue
+
+                # Extract composerId from key pattern: bubbleId:{composerId}:{bubbleId}
+                key_parts = key.split(":")
+                if len(key_parts) != 3:
+                    logger.warning(f"Unexpected bubbleId key format: {key}")
+                    continue
+
+                composer_id = key_parts[1]
+                bubble_id = key_parts[2]
+
+                # Check if data changed using incremental sync
+                if self.incremental_sync.should_process("global", composer_id, key, value):
+                    await self._queue_bubble_event(key, composer_id, bubble_id, bubble_data)
+
+        except Exception as e:
+            logger.error(f"Error syncing bubble data: {e}")
+
+    async def _queue_bubble_event(self, key: str, composer_id: str, bubble_id: str, data: dict):
+        """Queue bubble event to Redis."""
+        # Extract relevant bubble fields
+        extracted_fields = {
+            "composer_id": composer_id,
+            "bubble_id": bubble_id,
+            "type": data.get("type"),  # 1=user, 2=ai
+            "text": data.get("text"),
+            "rich_text": data.get("richText"),
+            "is_agentic": data.get("isAgentic"),
+            "token_count": data.get("tokenCount"),
+            "unified_mode": data.get("unifiedMode"),
+            "relevant_files": data.get("relevantFiles"),
+            "capabilities_ran": data.get("capabilitiesRan"),
+            "capability_statuses": data.get("capabilityStatuses"),
+            "checkpoint_id": data.get("checkpointId"),
+        }
+
+        event = {
+            "version": "0.1.0",
+            "hook_type": "DatabaseTrace",
+            "event_type": "bubble",
+            "event_id": str(uuid.uuid4()),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "platform": "cursor",
+            "metadata": {
+                "storage_level": "global",
+                "database_table": "cursorDiskKV",
+                "item_key": key,
+                "source": "user_level_listener_bubble",
+            },
+            "payload": {
+                "extracted_fields": extracted_fields,
+                "full_data": data
+            }
+        }
+
+        await self.event_queuer.queue_event(event)
 
     def set_active_workspaces(self, workspaces: Set[str]):
         """Update set of active workspaces."""

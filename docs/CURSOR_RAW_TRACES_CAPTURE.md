@@ -47,7 +47,7 @@ graph TB
     end
 
     subgraph "Database Layer"
-        UD[(User DB<br/>~/.cursor-tutor/db/6.vscdb)]
+        UD[(User DB<br/>~/Library/Application Support/Cursor/User/globalStorage/state.vscdb)]
         WD1[(Workspace DB 1<br/>.vscode/.vscdb)]
         WD2[(Workspace DB 2<br/>.vscode/.vscdb)]
         UL -.->|monitor| UD
@@ -92,7 +92,7 @@ sequenceDiagram
     participant CRT as cursor_raw_traces
 
     Note over UM: Startup: Initialize User-Level Listener
-    UM->>DB: Connect to ~/.cursor-tutor/db/6.vscdb
+    UM->>DB: Connect to ~/Library/Application Support/Cursor/User/globalStorage/state.vscdb
 
     Ext->>SM: session_start event
     SM->>UM: on_session_start(workspace_hash)
@@ -317,7 +317,7 @@ Instantiated on startup, monitors the global Cursor database for ALL workspaces:
 ```python
 class UserLevelListener:
     """
-    Monitors user-level Cursor database (~/.cursor-tutor/db/6.vscdb).
+    Monitors user-level Cursor database (~/Library/Application Support/Cursor/User/globalStorage/state.vscdb).
     Started once on UnifiedCursorMonitor startup.
     Remains active for entire monitor lifetime.
     """
@@ -359,31 +359,11 @@ class UserLevelListener:
 
     async def _find_user_db(self) -> Optional[Path]:
         """Find user-level Cursor database."""
-        # Primary location
-        cursor_dir = Path.home() / ".cursor-tutor"
+        # Mac-only path: ~/Library/Application Support/Cursor/User/globalStorage/state.vscdb
+        db_path = Path.home() / "Library" / "Application Support" / "Cursor" / "User" / "globalStorage" / "state.vscdb"
 
-        # Fallback locations
-        if not cursor_dir.exists():
-            cursor_dir = Path.home() / ".cursor"
-
-        if not cursor_dir.exists():
-            return None
-
-        # Check for database file
-        db_dir = cursor_dir / "db"
-        if not db_dir.exists():
-            return None
-
-        # Try specific version
-        db_path = db_dir / "6.vscdb"
         if db_path.exists():
             return db_path
-
-        # Try numbered versions
-        for i in range(10):
-            candidate = db_dir / f"{i}.vscdb"
-            if candidate.exists():
-                return candidate
 
         return None
 
