@@ -379,6 +379,9 @@ def create_cursor_indexes(client: SQLiteClient) -> None:
         client: SQLiteClient instance
     """
     indexes = [
+        # Unique constraint to prevent duplicates
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_cursor_unique_event ON cursor_raw_traces(event_id);",
+
         # Primary query patterns
         "CREATE INDEX IF NOT EXISTS idx_cursor_session_time ON cursor_raw_traces(external_session_id, timestamp) WHERE external_session_id IS NOT NULL;",
         "CREATE INDEX IF NOT EXISTS idx_cursor_event_type_time ON cursor_raw_traces(event_type, timestamp);",
