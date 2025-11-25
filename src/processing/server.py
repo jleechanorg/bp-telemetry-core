@@ -603,11 +603,12 @@ class TelemetryServer:
                 # Set running flag
                 self.claude_code_monitor.running = True
                 # Ensure consumer group exists
+                # Uses id='0' to process unprocessed messages after restart (safe with trimming)
                 try:
                     self.redis_client.xgroup_create(
                         self.claude_code_monitor.stream_name,
                         self.claude_code_monitor.consumer_group,
-                        id='0',
+                        id='0',  # Start from beginning - process unprocessed messages
                         mkstream=True
                     )
                     logger.info("Created consumer group: %s", self.claude_code_monitor.consumer_group)
