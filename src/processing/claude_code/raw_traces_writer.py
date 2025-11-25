@@ -19,7 +19,10 @@ from ..database.writer import SQLiteBatchWriter
 
 logger = logging.getLogger(__name__)
 
-# Prepared INSERT statement for claude_raw_traces
+# Prepared INSERT/UPSERT statement for claude_raw_traces
+# Uses ON CONFLICT to merge duplicate events (based on external_id, uuid):
+# - Preserves original sequence (AUTOINCREMENT) and ingested_at on updates
+# - Updates all other fields with new values
 INSERT_QUERY = """
 INSERT INTO claude_raw_traces (
     event_id, external_id, event_type, platform, timestamp,
@@ -44,6 +47,44 @@ INSERT INTO claude_raw_traces (
     ?, ?, ?,
     ?
 )
+ON CONFLICT(external_id, uuid) DO UPDATE SET
+    event_id = excluded.event_id,
+    event_type = excluded.event_type,
+    platform = excluded.platform,
+    timestamp = excluded.timestamp,
+    parent_uuid = excluded.parent_uuid,
+    request_id = excluded.request_id,
+    agent_id = excluded.agent_id,
+    workspace_hash = excluded.workspace_hash,
+    project_name = excluded.project_name,
+    is_sidechain = excluded.is_sidechain,
+    user_type = excluded.user_type,
+    cwd = excluded.cwd,
+    version = excluded.version,
+    git_branch = excluded.git_branch,
+    message_role = excluded.message_role,
+    message_model = excluded.message_model,
+    message_id = excluded.message_id,
+    message_type = excluded.message_type,
+    stop_reason = excluded.stop_reason,
+    stop_sequence = excluded.stop_sequence,
+    input_tokens = excluded.input_tokens,
+    cache_creation_input_tokens = excluded.cache_creation_input_tokens,
+    cache_read_input_tokens = excluded.cache_read_input_tokens,
+    output_tokens = excluded.output_tokens,
+    service_tier = excluded.service_tier,
+    cache_5m_tokens = excluded.cache_5m_tokens,
+    cache_1h_tokens = excluded.cache_1h_tokens,
+    operation = excluded.operation,
+    subtype = excluded.subtype,
+    level = excluded.level,
+    is_meta = excluded.is_meta,
+    summary = excluded.summary,
+    leaf_uuid = excluded.leaf_uuid,
+    duration_ms = excluded.duration_ms,
+    tokens_used = excluded.tokens_used,
+    tool_calls_count = excluded.tool_calls_count,
+    event_data = excluded.event_data
 """
 
 
@@ -172,27 +213,35 @@ class ClaudeRawTracesWriter:
 
     def write_batch_sync(self, events: List[Dict[str, Any]]) -> List[int]:
         """
-        Synchronous batch write for Claude Code events.
+        Synchronous batch write/upsert for Claude Code events.
 
         Writes to claude_raw_traces table with Claude-specific fields.
+        Uses INSERT ... ON CONFLICT to merge duplicate events:
+        - Preserves original sequence and ingested_at on updates
+        - Updates all other fields with new values
 
         Args:
             events: List of Claude Code event dictionaries
 
         Returns:
-            List of sequence numbers for written events
+            List of sequence numbers for written events (note: for updated
+            events, this returns the original sequence, not a new one)
         """
         if not events:
             return []
 
         # Prepare batch data
         rows = []
+        uuids = []  # Track UUIDs for sequence lookup after upsert
         for event in events:
             # Extract indexed fields
             fields = self._extract_indexed_fields(event)
 
             # Compress full event
             compressed_data = self.batch_writer.compress_event(event)
+
+            # Track UUID for later sequence lookup
+            uuids.append((fields['external_id'], fields['uuid']))
 
             # Build row tuple (39 fields)
             row = (
@@ -238,21 +287,31 @@ class ClaudeRawTracesWriter:
             )
             rows.append(row)
 
-        # Batch insert
+        # Batch insert/upsert
         try:
             with self.client.get_connection() as conn:
-                # Insert batch
+                # Insert/update batch
                 conn.executemany(INSERT_QUERY, rows)
 
-                # Get sequence numbers
-                cursor = conn.execute("SELECT last_insert_rowid()")
-                last_rowid = cursor.fetchone()[0]
-                sequences = list(range(last_rowid - len(rows) + 1, last_rowid + 1))
+                # Query actual sequences for all upserted events
+                # This handles both new inserts and updates correctly
+                sequences = []
+                for external_id, uuid_val in uuids:
+                    cursor = conn.execute(
+                        "SELECT sequence FROM claude_raw_traces WHERE external_id = ? AND uuid = ?",
+                        (external_id, uuid_val)
+                    )
+                    result = cursor.fetchone()
+                    if result:
+                        sequences.append(result[0])
 
                 # Commit
                 conn.commit()
 
-            logger.debug(f"Wrote Claude Code batch of {len(events)} events, sequences: {sequences[0]}-{sequences[-1]}")
+            if sequences:
+                logger.debug(f"Wrote Claude Code batch of {len(events)} events, sequences: {sequences[0]}-{sequences[-1]}")
+            else:
+                logger.debug(f"Wrote Claude Code batch of {len(events)} events")
 
             return sequences
 

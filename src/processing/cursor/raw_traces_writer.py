@@ -192,13 +192,17 @@ class CursorRawTracesWriter:
 
     def _batch_insert(self, rows: List[tuple]) -> int:
         """
-        Batch insert rows into cursor_raw_traces.
+        Batch insert/upsert rows into cursor_raw_traces.
+
+        Uses INSERT ... ON CONFLICT to merge duplicate events:
+        - Preserves original sequence (AUTOINCREMENT) and ingested_at on updates
+        - Updates all other fields with new values
 
         Args:
             rows: List of row tuples
 
         Returns:
-            Number of rows inserted
+            Number of rows processed (inserted or updated)
         """
         sql = """
         INSERT INTO cursor_raw_traces (
@@ -215,6 +219,42 @@ class CursorRawTracesWriter:
             is_archived, has_unread_messages,
             event_data
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(event_id) DO UPDATE SET
+            external_session_id = excluded.external_session_id,
+            event_type = excluded.event_type,
+            timestamp = excluded.timestamp,
+            storage_level = excluded.storage_level,
+            workspace_hash = excluded.workspace_hash,
+            database_table = excluded.database_table,
+            item_key = excluded.item_key,
+            generation_uuid = excluded.generation_uuid,
+            generation_type = excluded.generation_type,
+            command_type = excluded.command_type,
+            composer_id = excluded.composer_id,
+            bubble_id = excluded.bubble_id,
+            server_bubble_id = excluded.server_bubble_id,
+            message_type = excluded.message_type,
+            is_agentic = excluded.is_agentic,
+            text_description = excluded.text_description,
+            raw_text = excluded.raw_text,
+            rich_text = excluded.rich_text,
+            unix_ms = excluded.unix_ms,
+            created_at = excluded.created_at,
+            last_updated_at = excluded.last_updated_at,
+            completed_at = excluded.completed_at,
+            client_start_time = excluded.client_start_time,
+            client_end_time = excluded.client_end_time,
+            lines_added = excluded.lines_added,
+            lines_removed = excluded.lines_removed,
+            token_count_up_until_here = excluded.token_count_up_until_here,
+            capabilities_ran = excluded.capabilities_ran,
+            capability_statuses = excluded.capability_statuses,
+            project_name = excluded.project_name,
+            relevant_files = excluded.relevant_files,
+            selections = excluded.selections,
+            is_archived = excluded.is_archived,
+            has_unread_messages = excluded.has_unread_messages,
+            event_data = excluded.event_data
         """
 
         try:
@@ -223,7 +263,7 @@ class CursorRawTracesWriter:
                 conn.commit()
                 return len(rows)
         except Exception as e:
-            logger.error(f"Error batch inserting cursor_raw_traces: {e}")
+            logger.error(f"Error batch inserting/updating cursor_raw_traces: {e}")
             return 0
 
     def _extract_session_id(self, event: dict, metadata: dict, data: dict) -> Optional[str]:
