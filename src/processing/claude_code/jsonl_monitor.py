@@ -24,6 +24,7 @@ from .session_monitor import ClaudeCodeSessionMonitor
 from .jsonl_offset_store import JSONLOffsetStore
 from ..database.sqlite_client import SQLiteClient
 from ...capture.shared.project_utils import derive_project_name, recover_workspace_path_from_slug
+from ...capture.shared.redis_streams import TELEMETRY_MESSAGE_QUEUE_STREAM
 
 logger = logging.getLogger(__name__)
 
@@ -466,7 +467,7 @@ class ClaudeCodeJSONLMonitor:
 
             # Send to Redis stream (use message_queue for main event processing)
             self.redis_client.xadd(
-                "telemetry:message_queue",
+                TELEMETRY_MESSAGE_QUEUE_STREAM,
                 {
                     k: json.dumps(v) if isinstance(v, (dict, list)) else str(v)
                     for k, v in event.items()

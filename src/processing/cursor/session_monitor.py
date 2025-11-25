@@ -24,6 +24,7 @@ from .session_persistence import (
     DatabaseError
 )
 from ..database.sqlite_client import SQLiteClient
+from ...capture.shared.redis_streams import TELEMETRY_EVENTS_STREAM
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,7 @@ class SessionMonitor:
         self,
         redis_client: redis.Redis,
         sqlite_client: Optional[SQLiteClient] = None,
-        stream_name: str = "telemetry:events",
+        stream_name: str = TELEMETRY_EVENTS_STREAM,
         consumer_group: str = "cursor_session_monitors",
         consumer_name: str = "cursor_session_monitor",
     ):
