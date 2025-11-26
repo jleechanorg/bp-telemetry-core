@@ -19,11 +19,9 @@ import asyncio
 import json
 import sys
 import tempfile
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
 
 import pytest
 
@@ -48,11 +46,16 @@ class TestSQLiteClient:
         db_path.unlink(missing_ok=True)
     
     def test_database_creation(self, temp_db):
-        """Test database file is created."""
+        """Test database file is created by initialize_database."""
         from src.processing.database.sqlite_client import SQLiteClient
-        
+
+        # Remove the temp file so we can test actual creation
+        temp_db.unlink(missing_ok=True)
+        assert not temp_db.exists(), "File should not exist before initialization"
+
         client = SQLiteClient(str(temp_db))
-        assert temp_db.exists()
+        client.initialize_database()
+        assert temp_db.exists(), "Database file should be created after initialize_database"
     
     def test_execute_query(self, temp_db):
         """Test basic query execution."""
@@ -349,12 +352,15 @@ class TestConfig:
         assert config is not None
     
     def test_config_has_redis_settings(self):
-        """Test config has Redis settings."""
+        """Test config has Redis property returning RedisConfig."""
         from src.capture.shared.config import Config
-        
+
         config = Config()
-        # Config should have redis-related attributes or methods
-        assert hasattr(config, 'redis_host') or hasattr(config, 'get_redis_url') or True
+        # Config should have redis property
+        assert hasattr(config, 'redis'), "Config missing 'redis' property"
+        redis_config = config.redis
+        assert redis_config is not None, "redis property returned None"
+        assert hasattr(redis_config, 'host'), "RedisConfig missing 'host' attribute"
 
 
 # ============================================================================

@@ -18,7 +18,6 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
 
 # Add project root to path
 project_root = Path(__file__).parent.parent

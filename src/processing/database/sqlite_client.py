@@ -11,7 +11,6 @@ for high-throughput writes with WAL mode.
 
 import sqlite3
 import logging
-import re
 from pathlib import Path
 from typing import Optional, ContextManager
 from contextlib import contextmanager
