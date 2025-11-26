@@ -122,24 +122,42 @@ class SQLiteClient:
             conn.executemany(query, params)
             conn.commit()
 
-    def execute_script(self, script: str) -> None:
+    def execute_script(self, script: str, use_transaction: bool = True) -> None:
         """
-        Execute a SQL script (multiple statements).
+        Execute a SQL script (multiple statements) safely.
 
-        WARNING: Python's executescript() issues an implicit COMMIT before
-        executing the script. This means the context manager's rollback won't
-        help if a mid-script failure occurs. Use only for idempotent DDL
-        operations (schema setup) where partial state is acceptable.
-
-        For transactional safety with multiple statements, use execute()
-        with individual statements instead.
+        By default, executes statements within an explicit transaction to ensure
+        atomicity. If any statement fails, all changes are rolled back.
 
         Args:
-            script: SQL script string
+            script: SQL script string (semicolon-separated statements)
+            use_transaction: If True (default), wrap in BEGIN/COMMIT with rollback
+                           on failure. If False, use Python's executescript()
+                           which issues implicit COMMITs (unsafe for data ops).
+
+        Note:
+            DDL statements (CREATE, ALTER, DROP) may not be fully rollback-safe
+            in SQLite. For schema migrations, consider use_transaction=False
+            with idempotent statements (IF NOT EXISTS, IF EXISTS).
         """
         with self.get_connection() as conn:
-            conn.executescript(script)
-            conn.commit()
+            if use_transaction:
+                # Safe mode: split and execute in explicit transaction
+                statements = [s.strip() for s in script.split(';') if s.strip()]
+                try:
+                    conn.execute("BEGIN")
+                    for stmt in statements:
+                        conn.execute(stmt)
+                    conn.execute("COMMIT")
+                except Exception as e:
+                    conn.execute("ROLLBACK")
+                    logger.error(f"Script execution failed, rolled back: {e}")
+                    raise
+            else:
+                # Unsafe mode: use executescript (implicit COMMITs)
+                # WARNING: executescript() issues implicit COMMIT before script
+                conn.executescript(script)
+                conn.commit()
 
     def exists(self) -> bool:
         """

@@ -88,12 +88,14 @@ class TestSQLiteClient:
         except Exception:
             pass  # Expected
         
-        # Verify no data was inserted (rollback worked)
+        # Verify rollback worked - no data should be inserted
+        # Python's sqlite3 uses deferred transactions by default, so both INSERTs
+        # are part of the same implicit transaction. When the second fails before
+        # commit(), the context manager's rollback() reverts both.
         with client.get_connection() as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM test")
             count = cursor.fetchone()[0]
-            # Note: SQLite auto-commits each statement unless in explicit transaction
-            # This tests the context manager behavior
+            assert count == 0, f"Expected 0 rows after rollback, got {count}"
 
 
 class TestSchema:

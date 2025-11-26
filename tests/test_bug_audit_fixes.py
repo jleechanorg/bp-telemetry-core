@@ -267,18 +267,57 @@ class TestBUG009_HardcodedPrefix:
 class TestBUG011_ExecutescriptCommit:
     """
     BUG-011: executescript implicit COMMIT
-    
+
     RED: executescript() issues implicit COMMIT before script
-    GREEN: Warning docstring added, developers aware of limitation
+    GREEN: Safe transactional mode added with explicit BEGIN/COMMIT/ROLLBACK
     """
-    
-    def test_executescript_warning_documented(self):
-        """Verify execute_script has warning in docstring."""
+
+    def test_executescript_has_transaction_mode(self):
+        """Verify execute_script has use_transaction parameter."""
         from src.processing.database.sqlite_client import SQLiteClient
-        
-        docstring = SQLiteClient.execute_script.__doc__
-        assert "WARNING" in docstring
-        assert "implicit COMMIT" in docstring
+        import inspect
+
+        sig = inspect.signature(SQLiteClient.execute_script)
+        assert "use_transaction" in sig.parameters
+        # Default should be True (safe mode)
+        assert sig.parameters["use_transaction"].default is True
+
+    def test_executescript_rollback_on_failure(self):
+        """Verify execute_script rolls back on failure in safe mode."""
+        import tempfile
+        from src.processing.database.sqlite_client import SQLiteClient
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+
+        try:
+            client = SQLiteClient(db_path)
+
+            # Create table first
+            with client.get_connection() as conn:
+                conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, val TEXT)")
+                conn.commit()
+
+            # Script that will fail mid-way (second INSERT violates UNIQUE)
+            script = """
+                INSERT INTO test (id, val) VALUES (1, 'first');
+                INSERT INTO test (id, val) VALUES (1, 'duplicate_id');
+            """
+
+            # Should raise and rollback
+            try:
+                client.execute_script(script, use_transaction=True)
+            except Exception:
+                pass  # Expected
+
+            # Verify rollback: no rows should exist
+            with client.get_connection() as conn:
+                cursor = conn.execute("SELECT COUNT(*) FROM test")
+                count = cursor.fetchone()[0]
+                assert count == 0, f"Expected 0 rows after rollback, got {count}"
+        finally:
+            import os
+            os.unlink(db_path)
 
 
 class TestBUG012_DuplicateLine:
