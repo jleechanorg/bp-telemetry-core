@@ -11,11 +11,103 @@ for high-throughput writes with WAL mode.
 
 import sqlite3
 import logging
+import re
 from pathlib import Path
 from typing import Optional, ContextManager
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
+
+
+def _split_sql_statements(script: str) -> list[str]:
+    """
+    Split SQL script into individual statements, handling embedded semicolons.
+
+    Correctly handles:
+    - Semicolons inside single-quoted strings ('foo;bar')
+    - Semicolons inside double-quoted identifiers ("col;name")
+    - Semicolons inside single-line comments (-- comment;)
+    - Semicolons inside block comments (/* comment; */)
+
+    Args:
+        script: SQL script with multiple statements
+
+    Returns:
+        List of individual SQL statements (stripped, non-empty)
+    """
+    statements = []
+    current = []
+    in_single_quote = False
+    in_double_quote = False
+    in_line_comment = False
+    in_block_comment = False
+    i = 0
+    chars = script
+
+    while i < len(chars):
+        c = chars[i]
+        next_c = chars[i + 1] if i + 1 < len(chars) else ''
+
+        # Handle line comments
+        if not in_single_quote and not in_double_quote and not in_block_comment:
+            if c == '-' and next_c == '-':
+                in_line_comment = True
+                current.append(c)
+                i += 1
+                continue
+
+        # Handle end of line comment
+        if in_line_comment and c == '\n':
+            in_line_comment = False
+            current.append(c)
+            i += 1
+            continue
+
+        # Handle block comments
+        if not in_single_quote and not in_double_quote and not in_line_comment:
+            if c == '/' and next_c == '*':
+                in_block_comment = True
+                current.append(c)
+                i += 1
+                continue
+            if in_block_comment and c == '*' and next_c == '/':
+                in_block_comment = False
+                current.append(c)
+                current.append(next_c)
+                i += 2
+                continue
+
+        # Handle quotes (only outside comments)
+        if not in_line_comment and not in_block_comment:
+            if c == "'" and not in_double_quote:
+                # Check for escaped quote ('')
+                if in_single_quote and next_c == "'":
+                    current.append(c)
+                    current.append(next_c)
+                    i += 2
+                    continue
+                in_single_quote = not in_single_quote
+            elif c == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+
+        # Handle statement terminator
+        if c == ';' and not in_single_quote and not in_double_quote and not in_line_comment and not in_block_comment:
+            stmt = ''.join(current).strip()
+            if stmt:
+                statements.append(stmt)
+            current = []
+            i += 1
+            continue
+
+        current.append(c)
+        i += 1
+
+    # Handle final statement without trailing semicolon
+    stmt = ''.join(current).strip()
+    if stmt:
+        statements.append(stmt)
+
+    return statements
 
 
 class SQLiteClient:
@@ -143,7 +235,8 @@ class SQLiteClient:
         with self.get_connection() as conn:
             if use_transaction:
                 # Safe mode: split and execute in explicit transaction
-                statements = [s.strip() for s in script.split(';') if s.strip()]
+                # Uses smart parser that handles embedded semicolons in strings/comments
+                statements = _split_sql_statements(script)
                 try:
                     conn.execute("BEGIN")
                     for stmt in statements:

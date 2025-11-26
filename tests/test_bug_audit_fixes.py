@@ -270,6 +270,7 @@ class TestBUG011_ExecutescriptCommit:
 
     RED: executescript() issues implicit COMMIT before script
     GREEN: Safe transactional mode added with explicit BEGIN/COMMIT/ROLLBACK
+           and smart SQL parser for embedded semicolons
     """
 
     def test_executescript_has_transaction_mode(self):
@@ -315,6 +316,69 @@ class TestBUG011_ExecutescriptCommit:
                 cursor = conn.execute("SELECT COUNT(*) FROM test")
                 count = cursor.fetchone()[0]
                 assert count == 0, f"Expected 0 rows after rollback, got {count}"
+        finally:
+            import os
+            os.unlink(db_path)
+
+    def test_sql_parser_handles_embedded_semicolons(self):
+        """Verify SQL parser handles semicolons in strings and comments."""
+        from src.processing.database.sqlite_client import _split_sql_statements
+
+        # Test semicolon in single-quoted string
+        script1 = "INSERT INTO t VALUES ('foo;bar'); SELECT 1"
+        stmts1 = _split_sql_statements(script1)
+        assert len(stmts1) == 2
+        assert "foo;bar" in stmts1[0]
+
+        # Test semicolon in double-quoted identifier
+        script2 = 'SELECT "col;name" FROM t; SELECT 2'
+        stmts2 = _split_sql_statements(script2)
+        assert len(stmts2) == 2
+        assert "col;name" in stmts2[0]
+
+        # Test semicolon in line comment
+        script3 = "SELECT 1; -- comment; ignored\nSELECT 2"
+        stmts3 = _split_sql_statements(script3)
+        assert len(stmts3) == 2
+
+        # Test semicolon in block comment
+        script4 = "SELECT 1; /* comment; still comment */ SELECT 2"
+        stmts4 = _split_sql_statements(script4)
+        assert len(stmts4) == 2
+
+        # Test escaped single quote
+        script5 = "INSERT INTO t VALUES ('it''s;here'); SELECT 1"
+        stmts5 = _split_sql_statements(script5)
+        assert len(stmts5) == 2
+        assert "it''s;here" in stmts5[0]
+
+    def test_sql_parser_with_real_database(self):
+        """Verify embedded semicolons work with actual database execution."""
+        import tempfile
+        from src.processing.database.sqlite_client import SQLiteClient
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+
+        try:
+            client = SQLiteClient(db_path)
+
+            # Create table and insert value with semicolon
+            script = """
+                CREATE TABLE test (id INTEGER PRIMARY KEY, val TEXT);
+                INSERT INTO test (val) VALUES ('value;with;semicolons');
+                INSERT INTO test (val) VALUES ('normal value');
+            """
+
+            client.execute_script(script, use_transaction=True)
+
+            # Verify both rows inserted correctly
+            with client.get_connection() as conn:
+                cursor = conn.execute("SELECT val FROM test ORDER BY id")
+                rows = cursor.fetchall()
+                assert len(rows) == 2
+                assert rows[0][0] == "value;with;semicolons"
+                assert rows[1][0] == "normal value"
         finally:
             import os
             os.unlink(db_path)
