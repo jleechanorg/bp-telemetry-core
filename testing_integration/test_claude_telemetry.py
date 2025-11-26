@@ -9,10 +9,7 @@ Real Integration Tests for Claude Code Telemetry
 These tests invoke Claude Code with --dangerously-skip-permissions and verify
 that telemetry events are properly captured in the database.
 
-IMPORTANT: These tests require:
-1. Claude Code CLI installed and configured
-2. Telemetry server running (or hooks configured)
-3. Write access to ~/.blueplane/
+The test automatically starts and stops the telemetry server.
 
 Usage:
     python testing_integration/test_claude_telemetry.py
@@ -23,9 +20,11 @@ Usage:
 
 import json
 import os
+import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -39,6 +38,93 @@ sys.path.insert(0, str(project_root))
 RESULTS_DIR = Path("/tmp/bp-telemetry-core/bug_fix")
 
 
+class TelemetryServerManager:
+    """Manages telemetry server lifecycle for testing."""
+
+    def __init__(self):
+        self.server_process = None
+        self.server_script = project_root / "scripts" / "start_server.py"
+        self.pid_file = Path.home() / ".blueplane" / "server.pid"
+
+    def is_running(self) -> bool:
+        """Check if telemetry server is running."""
+        if self.pid_file.exists():
+            try:
+                pid = int(self.pid_file.read_text().strip())
+                os.kill(pid, 0)  # Check if process exists
+                return True
+            except (ValueError, OSError):
+                pass
+        return False
+
+    def start(self, timeout: int = 30) -> bool:
+        """Start telemetry server and wait for initialization."""
+        if self.is_running():
+            print("  Server already running")
+            return True
+
+        print(f"  Starting telemetry server from {self.server_script}...")
+
+        # Start server in background
+        self.server_process = subprocess.Popen(
+            [sys.executable, str(self.server_script)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(project_root),
+        )
+
+        # Wait for server to be ready (PID file created)
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            if self.pid_file.exists():
+                print(f"  Server started (PID: {self.pid_file.read_text().strip()})")
+                time.sleep(2)  # Give it a moment to fully initialize
+                return True
+            time.sleep(0.5)
+
+        # Check if process died
+        if self.server_process.poll() is not None:
+            stdout, stderr = self.server_process.communicate()
+            print(f"  Server failed to start:")
+            print(f"  stdout: {stdout.decode()[:500]}")
+            print(f"  stderr: {stderr.decode()[:500]}")
+            return False
+
+        print(f"  Server start timed out after {timeout}s")
+        return False
+
+    def stop(self) -> None:
+        """Stop telemetry server."""
+        if self.pid_file.exists():
+            try:
+                pid = int(self.pid_file.read_text().strip())
+                print(f"  Stopping server (PID: {pid})...")
+                os.kill(pid, signal.SIGTERM)
+                time.sleep(1)
+                # Check if still running
+                try:
+                    os.kill(pid, 0)
+                    os.kill(pid, signal.SIGKILL)  # Force kill
+                except OSError:
+                    pass
+            except (ValueError, OSError) as e:
+                print(f"  Warning: Could not stop server: {e}")
+
+        if self.server_process:
+            self.server_process.terminate()
+            try:
+                self.server_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.server_process.kill()
+
+        # Clean up PID file if it exists
+        if self.pid_file.exists():
+            try:
+                self.pid_file.unlink()
+            except OSError:
+                pass
+
+
 class ClaudeTelemetryTest:
     """Test harness for Claude Code telemetry integration tests."""
 
@@ -47,18 +133,19 @@ class ClaudeTelemetryTest:
         self.test_marker = f"TEST_{uuid.uuid4().hex[:8]}"
         self.start_time = datetime.now(timezone.utc)
         self.results = {"passed": [], "failed": [], "skipped": []}
+        self.server_manager = TelemetryServerManager()
 
     def record(self, name: str, passed: bool, message: str = "", skip: bool = False):
         """Record test result."""
         if skip:
             self.results["skipped"].append((name, message))
-            print(f"  ⏭️  {name}: SKIPPED - {message}")
+            print(f"  SKIP {name}: {message}")
         elif passed:
             self.results["passed"].append((name, message))
-            print(f"  ✅ {name}: {message}")
+            print(f"  PASS {name}: {message}")
         else:
             self.results["failed"].append((name, message))
-            print(f"  ❌ {name}: {message}")
+            print(f"  FAIL {name}: {message}")
 
     def check_prerequisites(self) -> bool:
         """Check if Claude Code CLI is available."""
@@ -75,6 +162,16 @@ class ClaudeTelemetryTest:
                 return True
             return False
         except (subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+
+    def check_redis(self) -> bool:
+        """Check if Redis is running."""
+        try:
+            import redis
+            r = redis.Redis(host='localhost', port=6379)
+            r.ping()
+            return True
+        except Exception:
             return False
 
     def get_event_count_since(self, table: str = "claude_raw_traces") -> int:
@@ -137,6 +234,32 @@ class ClaudeTelemetryTest:
             return False, str(e)
 
 
+def test_redis_available(harness: ClaudeTelemetryTest):
+    """Test that Redis is running."""
+    print("\n[TEST] Redis availability...")
+
+    available = harness.check_redis()
+    harness.record(
+        "redis_available",
+        available,
+        "Redis is running" if available else "Redis not running - start with: redis-server"
+    )
+    return available
+
+
+def test_server_starts(harness: ClaudeTelemetryTest):
+    """Test that telemetry server can start."""
+    print("\n[TEST] Starting telemetry server...")
+
+    started = harness.server_manager.start(timeout=30)
+    harness.record(
+        "server_starts",
+        started,
+        "Telemetry server started" if started else "Failed to start telemetry server"
+    )
+    return started
+
+
 def test_claude_cli_available(harness: ClaudeTelemetryTest):
     """Test that Claude CLI is installed and accessible."""
     print("\n[TEST] Claude CLI availability...")
@@ -151,8 +274,11 @@ def test_claude_cli_available(harness: ClaudeTelemetryTest):
 
 
 def test_telemetry_db_exists(harness: ClaudeTelemetryTest):
-    """Test that telemetry database exists or can be created."""
+    """Test that telemetry database exists."""
     print("\n[TEST] Telemetry database...")
+
+    # Wait a moment for DB to be created
+    time.sleep(2)
 
     db_exists = harness.telemetry_db.exists()
     if db_exists:
@@ -161,7 +287,7 @@ def test_telemetry_db_exists(harness: ClaudeTelemetryTest):
         harness.record(
             "telemetry_db",
             False,
-            f"Database not found at {harness.telemetry_db} - run telemetry server first",
+            f"Database not found at {harness.telemetry_db}",
             skip=True
         )
     return db_exists
@@ -185,7 +311,7 @@ def test_simple_prompt_generates_events(harness: ClaudeTelemetryTest):
 
     # Wait for events to be processed
     print("  Waiting for events to be captured...")
-    time.sleep(3)
+    time.sleep(5)
 
     final_count = harness.get_event_count_since()
     new_events = final_count - initial_count
@@ -196,11 +322,21 @@ def test_simple_prompt_generates_events(harness: ClaudeTelemetryTest):
         harness.record("simple_prompt", True, f"Generated {new_events} new events")
         return True
     else:
-        harness.record(
-            "simple_prompt",
-            False,
-            "No new events captured - check if telemetry hooks are configured"
-        )
+        # Check if hooks are installed
+        hooks_dir = Path.home() / ".claude" / "hooks" / "telemetry"
+        if not hooks_dir.exists():
+            harness.record(
+                "simple_prompt",
+                False,
+                f"No events captured - telemetry hooks not installed. Run: python scripts/install_claude_hooks.py",
+                skip=True
+            )
+        else:
+            harness.record(
+                "simple_prompt",
+                False,
+                "No new events captured - hooks installed but not working"
+            )
         return False
 
 
@@ -238,7 +374,7 @@ def test_conversation_tracking(harness: ClaudeTelemetryTest):
         harness.record("conversation_tracking", False, f"Command failed: {output[:100]}")
         return False
 
-    time.sleep(2)
+    time.sleep(3)
 
     # Check for conversation-related events
     events = harness.get_recent_events(limit=10)
@@ -263,16 +399,43 @@ def run_all_tests():
     print(f"\nTest started at: {datetime.now(timezone.utc).isoformat()}")
 
     harness = ClaudeTelemetryTest()
+    server_started_by_us = False
 
-    # Run tests in order
-    if not test_claude_cli_available(harness):
-        print("\n⚠️  Claude CLI not available - skipping remaining tests")
-        harness.record("remaining_tests", False, "Skipped due to missing CLI", skip=True)
-    else:
+    try:
+        # Check prerequisites first
+        if not test_redis_available(harness):
+            print("\n!! Redis not available - cannot run integration tests")
+            save_results(harness)
+            return 1
+
+        if not test_claude_cli_available(harness):
+            print("\n!! Claude CLI not available - skipping remaining tests")
+            harness.record("remaining_tests", False, "Skipped due to missing CLI", skip=True)
+            save_results(harness)
+            return 1
+
+        # Start server if not already running
+        if not harness.server_manager.is_running():
+            server_started_by_us = test_server_starts(harness)
+            if not server_started_by_us:
+                print("\n!! Failed to start server - cannot run tests")
+                save_results(harness)
+                return 1
+        else:
+            harness.record("server_starts", True, "Server already running")
+
+        # Run tests
         test_telemetry_db_exists(harness)
         test_simple_prompt_generates_events(harness)
         test_event_structure(harness)
         test_conversation_tracking(harness)
+
+    finally:
+        # Stop server if we started it
+        if server_started_by_us:
+            print("\n[CLEANUP] Stopping telemetry server...")
+            harness.server_manager.stop()
+            print("  Server stopped")
 
     # Summary
     print("\n" + "=" * 70)
@@ -314,7 +477,7 @@ def save_results(harness: ClaudeTelemetryTest):
     with open(result_file, "w") as f:
         json.dump(results, f, indent=2)
 
-    print(f"\n📄 Results saved to: {result_file}")
+    print(f"\nResults saved to: {result_file}")
 
     # Also save a human-readable summary
     summary_file = RESULTS_DIR / "claude_integration_summary.txt"
@@ -329,19 +492,19 @@ def save_results(harness: ClaudeTelemetryTest):
         if results['passed']:
             f.write("PASSED:\n")
             for t in results['passed']:
-                f.write(f"  ✅ {t['name']}: {t['message']}\n")
+                f.write(f"  [PASS] {t['name']}: {t['message']}\n")
 
         if results['failed']:
             f.write("\nFAILED:\n")
             for t in results['failed']:
-                f.write(f"  ❌ {t['name']}: {t['message']}\n")
+                f.write(f"  [FAIL] {t['name']}: {t['message']}\n")
 
         if results['skipped']:
             f.write("\nSKIPPED:\n")
             for t in results['skipped']:
-                f.write(f"  ⏭️  {t['name']}: {t['message']}\n")
+                f.write(f"  [SKIP] {t['name']}: {t['message']}\n")
 
-    print(f"📄 Summary saved to: {summary_file}")
+    print(f"Summary saved to: {summary_file}")
 
 
 # Pytest compatibility
