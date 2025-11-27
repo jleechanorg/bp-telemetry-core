@@ -9,10 +9,8 @@ Handles batch writes to claude_raw_traces table with field extraction,
 zlib compression, and performance optimization.
 """
 
-import json
 import logging
 from typing import Dict, List, Any
-from datetime import datetime
 
 from ..database.sqlite_client import SQLiteClient
 from ..database.writer import SQLiteBatchWriter

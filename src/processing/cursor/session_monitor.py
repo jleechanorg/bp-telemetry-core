@@ -469,7 +469,6 @@ class SessionMonitor:
             # Decode fields
             event_type = self._decode_field(fields, 'event_type')
             platform = self._decode_field(fields, 'platform')
-            hook_type = self._decode_field(fields, 'hook_type')
 
 
             # Only process Cursor session events

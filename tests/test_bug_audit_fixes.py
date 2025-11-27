@@ -38,7 +38,7 @@ class TestBUG001_MissingImport:
         from src.processing.server import TelemetryServer
         
         # Verify the type annotation doesn't cause NameError
-        server = TelemetryServer.__init__.__annotations__
+        _ = TelemetryServer.__init__.__annotations__
         # If we get here without NameError, the import works
         assert True
     
@@ -58,7 +58,6 @@ class TestBUG002_BareExcept:
     
     def test_valid_timestamp_parsing(self):
         """Verify valid ISO timestamp is parsed correctly."""
-        from src.processing.cursor.raw_traces_writer import CursorRawTracesWriter
         
         # Test the parsing logic directly
         timestamp_str = "2025-11-25T10:30:00Z"

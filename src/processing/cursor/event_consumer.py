@@ -12,14 +12,18 @@ Implements at-least-once delivery guarantee with:
 - Claim mechanism for stale events
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import os
-import time
 from datetime import datetime, timezone
-from typing import List, Tuple, Optional, Callable
+from typing import TYPE_CHECKING, List, Tuple, Optional
 import redis
+
+if TYPE_CHECKING:
+    from .raw_traces_writer import CursorRawTracesWriter
 
 logger = logging.getLogger(__name__)
 

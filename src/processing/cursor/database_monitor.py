@@ -17,7 +17,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Dict, Optional, Set, Tuple
+from typing import Dict, Set, Tuple
 import aiosqlite
 import redis
 
@@ -99,7 +99,7 @@ class CursorDatabaseMonitor:
         for conn in self.db_connections.values():
             try:
                 await conn.close()
-            except:
+            except Exception:
                 pass
         self.db_connections.clear()
 
@@ -514,7 +514,7 @@ class CursorDatabaseMonitor:
             if workspace_hash in self.db_connections:
                 try:
                     await self.db_connections[workspace_hash].close()
-                except:
+                except Exception:
                     pass
                 del self.db_connections[workspace_hash]
 

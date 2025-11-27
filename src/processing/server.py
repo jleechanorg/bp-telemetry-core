@@ -19,7 +19,6 @@ from typing import Optional
 import redis
 
 from .database.sqlite_client import SQLiteClient
-from .database.schema import create_schema
 from .database.writer import SQLiteBatchWriter
 from .claude_code.event_consumer import ClaudeEventConsumer
 from .common.cdc_publisher import CDCPublisher
@@ -142,7 +141,7 @@ class TelemetryServer:
         
         # Check schema version and migrate if needed
         from src.processing.database.schema import (
-            create_schema, get_schema_version, migrate_schema, 
+            create_schema, migrate_schema, 
             SCHEMA_VERSION, detect_schema_version
         )
         
