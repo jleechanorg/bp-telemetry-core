@@ -19,8 +19,6 @@
 #
 # =============================================================================
 
-set -e
-
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -71,9 +69,10 @@ echo ""
 
 # Run the Python test suite
 cd "$PROJECT_ROOT"
+set +e  # allow script to report results even if tests fail
 python3 testing_integration/test_claude_telemetry.py
-
 EXIT_CODE=$?
+set -e
 
 echo ""
 if [ $EXIT_CODE -eq 0 ]; then

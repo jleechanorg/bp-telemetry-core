@@ -23,12 +23,11 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# Add project root to path
+# Add project root to path BEFORE local imports
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# Results output directory
-RESULTS_DIR = Path("/tmp/bp-telemetry-core/bug_fix")
+from testing_integration.test_harness_utils import save_test_results
 
 
 class CursorTelemetryTest:
@@ -225,53 +224,11 @@ def run_all_tests():
 
 def save_results(harness: CursorTelemetryTest):
     """Save test results to /tmp/bp-telemetry-core/bug_fix/."""
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-
-    results = {
-        "test_suite": "cursor_telemetry_integration",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "summary": {
-            "passed": len(harness.results['passed']),
-            "failed": len(harness.results['failed']),
-            "skipped": len(harness.results['skipped']),
-        },
-        "passed": [{"name": n, "message": m} for n, m in harness.results['passed']],
-        "failed": [{"name": n, "message": m} for n, m in harness.results['failed']],
-        "skipped": [{"name": n, "message": m} for n, m in harness.results['skipped']],
-    }
-
-    result_file = RESULTS_DIR / "cursor_integration_results.json"
-    with open(result_file, "w") as f:
-        json.dump(results, f, indent=2)
-
-    print(f"\n📄 Results saved to: {result_file}")
-
-    # Also save a human-readable summary
-    summary_file = RESULTS_DIR / "cursor_integration_summary.txt"
-    with open(summary_file, "w") as f:
-        f.write("Cursor Telemetry - Integration Test Results\n")
-        f.write("=" * 50 + "\n")
-        f.write(f"Timestamp: {results['timestamp']}\n\n")
-        f.write(f"Passed:  {results['summary']['passed']}\n")
-        f.write(f"Failed:  {results['summary']['failed']}\n")
-        f.write(f"Skipped: {results['summary']['skipped']}\n\n")
-
-        if results['passed']:
-            f.write("PASSED:\n")
-            for t in results['passed']:
-                f.write(f"  ✅ {t['name']}: {t['message']}\n")
-
-        if results['failed']:
-            f.write("\nFAILED:\n")
-            for t in results['failed']:
-                f.write(f"  ❌ {t['name']}: {t['message']}\n")
-
-        if results['skipped']:
-            f.write("\nSKIPPED:\n")
-            for t in results['skipped']:
-                f.write(f"  ⏭️  {t['name']}: {t['message']}\n")
-
-    print(f"📄 Summary saved to: {summary_file}")
+    save_test_results(
+        harness.results,
+        "cursor_telemetry_integration",
+        "cursor_integration"
+    )
 
 
 if __name__ == "__main__":

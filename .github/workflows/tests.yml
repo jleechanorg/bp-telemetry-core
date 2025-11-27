@@ -52,4 +52,3 @@ jobs:
 
       - name: Run linter
         run: ruff check src/ tests/ --ignore E501
-        continue-on-error: true

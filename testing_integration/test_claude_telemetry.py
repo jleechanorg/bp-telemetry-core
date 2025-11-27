@@ -30,13 +30,11 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Add project root to path
+# Add project root to path BEFORE local imports
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# Results output directory
-RESULTS_DIR = Path("/tmp/bp-telemetry-core/bug_fix")
-
+from testing_integration.test_harness_utils import save_test_results
 
 class TelemetryServerManager:
     """Manages telemetry server lifecycle for testing."""
@@ -176,39 +174,43 @@ class ClaudeTelemetryTest:
 
     def get_event_count_since(self, table: str = "claude_raw_traces") -> int:
         """Get count of events since test started."""
+        allowed_tables = {"claude_raw_traces", "cursor_raw_traces"}
+        if table not in allowed_tables:
+            raise ValueError(f"Invalid table name: {table}")
+
         if not self.telemetry_db.exists():
             return 0
 
         try:
-            conn = sqlite3.connect(str(self.telemetry_db))
-            cursor = conn.execute(f"""
-                SELECT COUNT(*) FROM {table}
-                WHERE timestamp >= ?
-            """, (self.start_time.isoformat(),))
-            count = cursor.fetchone()[0]
-            conn.close()
-            return count
+            with sqlite3.connect(str(self.telemetry_db)) as conn:
+                cursor = conn.execute(f"""
+                    SELECT COUNT(*) FROM {table}
+                    WHERE timestamp >= ?
+                """, (self.start_time.isoformat(),))
+                return cursor.fetchone()[0]
         except sqlite3.Error as e:
             print(f"  Warning: DB error - {e}")
             return 0
 
     def get_recent_events(self, table: str = "claude_raw_traces", limit: int = 5) -> list:
         """Get recent events from database."""
+        allowed_tables = {"claude_raw_traces", "cursor_raw_traces"}
+        if table not in allowed_tables:
+            raise ValueError(f"Invalid table name: {table}")
+
         if not self.telemetry_db.exists():
             return []
 
         try:
-            conn = sqlite3.connect(str(self.telemetry_db))
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(f"""
-                SELECT * FROM {table}
-                WHERE timestamp >= ?
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """, (self.start_time.isoformat(), limit))
-            events = [dict(row) for row in cursor.fetchall()]
-            conn.close()
-            return events
+            with sqlite3.connect(str(self.telemetry_db)) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute(f"""
+                    SELECT * FROM {table}
+                    WHERE timestamp >= ?
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                """, (self.start_time.isoformat(), limit))
+                return [dict(row) for row in cursor.fetchall()]
         except sqlite3.Error as e:
             print(f"  Warning: DB error - {e}")
             return []
@@ -458,53 +460,11 @@ def run_all_tests():
 
 def save_results(harness: ClaudeTelemetryTest):
     """Save test results to /tmp/bp-telemetry-core/bug_fix/."""
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-
-    results = {
-        "test_suite": "claude_telemetry_integration",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "summary": {
-            "passed": len(harness.results['passed']),
-            "failed": len(harness.results['failed']),
-            "skipped": len(harness.results['skipped']),
-        },
-        "passed": [{"name": n, "message": m} for n, m in harness.results['passed']],
-        "failed": [{"name": n, "message": m} for n, m in harness.results['failed']],
-        "skipped": [{"name": n, "message": m} for n, m in harness.results['skipped']],
-    }
-
-    result_file = RESULTS_DIR / "claude_integration_results.json"
-    with open(result_file, "w") as f:
-        json.dump(results, f, indent=2)
-
-    print(f"\nResults saved to: {result_file}")
-
-    # Also save a human-readable summary
-    summary_file = RESULTS_DIR / "claude_integration_summary.txt"
-    with open(summary_file, "w") as f:
-        f.write("Claude Code Telemetry - Integration Test Results\n")
-        f.write("=" * 50 + "\n")
-        f.write(f"Timestamp: {results['timestamp']}\n\n")
-        f.write(f"Passed:  {results['summary']['passed']}\n")
-        f.write(f"Failed:  {results['summary']['failed']}\n")
-        f.write(f"Skipped: {results['summary']['skipped']}\n\n")
-
-        if results['passed']:
-            f.write("PASSED:\n")
-            for t in results['passed']:
-                f.write(f"  [PASS] {t['name']}: {t['message']}\n")
-
-        if results['failed']:
-            f.write("\nFAILED:\n")
-            for t in results['failed']:
-                f.write(f"  [FAIL] {t['name']}: {t['message']}\n")
-
-        if results['skipped']:
-            f.write("\nSKIPPED:\n")
-            for t in results['skipped']:
-                f.write(f"  [SKIP] {t['name']}: {t['message']}\n")
-
-    print(f"Summary saved to: {summary_file}")
+    save_test_results(
+        harness.results,
+        "claude_telemetry_integration",
+        "claude_integration"
+    )
 
 
 # Pytest compatibility
