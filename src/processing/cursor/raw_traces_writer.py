@@ -16,7 +16,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from ..database.sqlite_client import SQLiteClient
 from ..database.writer import SQLiteBatchWriter
@@ -78,7 +78,6 @@ class CursorRawTracesWriter:
         metadata = event.get("metadata", {})
         payload = event.get("payload", {})
         full_data = payload.get("full_data", {})
-        extracted = payload.get("extracted_fields", {})
 
         # Generate event_id if not present
         event_id = event.get("event_id") or str(uuid.uuid4())
@@ -88,7 +87,7 @@ class CursorRawTracesWriter:
         if timestamp_str:
             try:
                 timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-            except:
+            except (ValueError, TypeError):
                 timestamp = datetime.now(timezone.utc)
         else:
             timestamp = datetime.now(timezone.utc)

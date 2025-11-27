@@ -14,7 +14,6 @@ import uuid
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
-from pathlib import Path
 
 try:
     import redis
@@ -24,7 +23,6 @@ except ImportError:
     REDIS_AVAILABLE = False
 
 from .config import Config
-from .event_schema import EventSchema
 
 
 # Configure logging
