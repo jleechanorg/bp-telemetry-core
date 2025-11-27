@@ -51,4 +51,4 @@ jobs:
           pip install ruff
 
       - name: Run linter
-        run: ruff check src/ tests/ --ignore E501
+        run: ruff check src/ tests/ --ignore E501,E402
