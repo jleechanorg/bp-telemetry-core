@@ -114,9 +114,9 @@ class ClaudeRawTracesWriter:
             )
 
         return {
-            'event_id': entry_data.get('uuid', ''),
+            'event_id': entry_data.get('uuid') or event.get('event_id', ''),
             'external_id': external_id,
-            'event_type': entry_data.get('type', ''),
+            'event_type': entry_data.get('type') or event.get('event_type', ''),
             'platform': 'claude_code',
             'timestamp': entry_data.get('timestamp', event.get('timestamp', '')),
 
