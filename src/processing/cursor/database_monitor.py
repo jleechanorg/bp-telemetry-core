@@ -515,8 +515,8 @@ class CursorDatabaseMonitor:
             if workspace_hash in self.db_connections:
                 try:
                     await self.db_connections[workspace_hash].close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to close DB connection for workspace {workspace_hash}: {e}")
                 del self.db_connections[workspace_hash]
 
             # Clear health stats

@@ -18,13 +18,11 @@ Usage:
     pytest testing_integration/test_claude_telemetry.py -v -s
 """
 
-import json
 import os
 import signal
 import sqlite3
 import subprocess
 import sys
-import threading
 import time
 import uuid
 from datetime import datetime, timezone

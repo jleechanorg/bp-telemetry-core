@@ -27,6 +27,13 @@ def _split_sql_statements(script: str) -> list[str]:
     - Semicolons inside double-quoted identifiers ("col;name")
     - Semicolons inside single-line comments (-- comment;)
     - Semicolons inside block comments (/* comment; */)
+    - Escaped quotes in SQLite style ('O''Brien' -> O'Brien)
+
+    Note: SQLite string escaping rules:
+    - Backslash is NOT an escape character in SQLite strings
+    - Literal '\\n' in a string is two characters (backslash + n), not a newline
+    - Single quotes are escaped by doubling them: '' represents one quote
+    - This parser follows SQLite's escaping conventions, not C-style escaping
 
     Args:
         script: SQL script with multiple statements
