@@ -101,7 +101,7 @@ class CursorDatabaseMonitor:
             try:
                 await conn.close()
             except Exception:
-                pass
+                pass  # Ignore errors during cleanup - connection may already be closed
         self.db_connections.clear()
 
         logger.info("Database monitor stopped")
