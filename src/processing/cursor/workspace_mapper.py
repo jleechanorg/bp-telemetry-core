@@ -152,7 +152,7 @@ class WorkspaceMapper:
                     except Exception:
                         continue
         except Exception:
-            pass
+            pass  # Ignore database errors - workspace lookup is best-effort
 
         return False
 

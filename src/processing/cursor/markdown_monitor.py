@@ -118,7 +118,7 @@ class CursorMarkdownMonitor:
             try:
                 await conn.close()
             except Exception:
-                pass
+                pass  # Ignore errors during cleanup - connection may already be closed
         self.db_connections.clear()
         
         # Close DuckDB connection
@@ -126,7 +126,7 @@ class CursorMarkdownMonitor:
             try:
                 self.duckdb_writer.close()
             except Exception:
-                pass
+                pass  # Ignore errors during cleanup - writer may already be closed
         
         logger.info("Markdown monitor stopped")
 
@@ -417,7 +417,7 @@ class CursorMarkdownMonitor:
                     await conn.close()
                     logger.info(f"Closed database connection for inactive workspace {workspace_hash}")
                 except Exception:
-                    pass
+                    pass  # Ignore errors during cleanup - connection may already be closed
             
             # Clean up state
             self.last_data_hash.pop(workspace_hash, None)

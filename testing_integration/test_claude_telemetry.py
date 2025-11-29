@@ -104,7 +104,7 @@ class TelemetryServerManager:
                     os.kill(pid, 0)
                     os.kill(pid, signal.SIGKILL)  # Force kill
                 except OSError:
-                    pass
+                    pass  # Process already terminated - nothing to do
             except (ValueError, OSError) as e:
                 print(f"  Warning: Could not stop server: {e}")
 
@@ -120,7 +120,7 @@ class TelemetryServerManager:
             try:
                 self.pid_file.unlink()
             except OSError:
-                pass
+                pass  # Ignore errors during cleanup - file may be locked or already removed
 
 
 class ClaudeTelemetryTest:
