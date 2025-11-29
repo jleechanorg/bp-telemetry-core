@@ -205,7 +205,8 @@ class TelemetryServer:
         """Initialize fast path consumer."""
         logger.info("Initializing fast path consumer")
 
-        stream_config = self.config.get_stream_config("events")
+        # Consume from the main capture stream (message_queue)
+        stream_config = self.config.get_stream_config("message_queue")
         cdc_config = self.config.get_stream_config("cdc")
         
         # Create CDC publisher
@@ -250,8 +251,8 @@ class TelemetryServer:
         logger.info("Initializing HTTP endpoint for hook events")
 
         # Create queue writer for the HTTP endpoint
-        # Use "events" stream (telemetry:events) for hook events
-        self.queue_writer = MessageQueueWriter(self.config, stream_type="events")
+        # Use the main capture stream (telemetry:message_queue) for hook events
+        self.queue_writer = MessageQueueWriter(self.config, stream_type="message_queue")
 
         # Get configuration from config.yaml (SERVER side)
         host = http_config.get("host", "127.0.0.1")
