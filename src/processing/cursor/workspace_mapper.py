@@ -149,10 +149,11 @@ class WorkspaceMapper:
                         ''', (f'%{workspace_path}%', f'%{workspace_path}%'))
                         if await cursor.fetchone():
                             return True
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Skipping table {table} due to error: {e}")
                         continue
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Error searching database for workspace path match: {e}")
 
         return False
 
@@ -229,6 +230,5 @@ class WorkspaceMapper:
         else:
             logger.warning("Fallback: No database found with aiService.generations data")
         return most_recent_db
-
 
 

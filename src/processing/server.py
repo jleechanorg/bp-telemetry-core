@@ -417,7 +417,8 @@ class TelemetryServer:
         # Pass sqlite_client for database persistence
         self.claude_session_monitor = ClaudeCodeSessionMonitor(
             redis_client=self.redis_client,
-            sqlite_client=self.sqlite_client
+            sqlite_client=self.sqlite_client,
+            stream_name=stream_config.name,
         )
         
         # Create timeout manager for abandoned sessions

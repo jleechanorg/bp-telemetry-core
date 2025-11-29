@@ -100,8 +100,8 @@ class CursorDatabaseMonitor:
         for conn in self.db_connections.values():
             try:
                 await conn.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Ignoring error closing DB connection on shutdown: {e}")
         self.db_connections.clear()
 
         logger.info("Database monitor stopped")

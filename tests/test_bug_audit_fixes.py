@@ -72,7 +72,7 @@ class TestBUG002_BareExcept:
         """Verify invalid timestamp falls back to current time."""
         timestamp_str = "not-a-timestamp"
         try:
-            timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+            datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
             pytest.fail("Should have raised ValueError")
         except (ValueError, TypeError):
             # This is expected - fall back to current time
