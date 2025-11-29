@@ -117,16 +117,16 @@ class CursorMarkdownMonitor:
         for conn in self.db_connections.values():
             try:
                 await conn.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Ignoring error closing markdown DB connection on shutdown: {e}")
         self.db_connections.clear()
         
         # Close DuckDB connection
         if self.duckdb_writer:
             try:
                 self.duckdb_writer.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Ignoring error closing DuckDB writer: {e}")
         
         logger.info("Markdown monitor stopped")
 
@@ -416,8 +416,8 @@ class CursorMarkdownMonitor:
                 try:
                     await conn.close()
                     logger.info(f"Closed database connection for inactive workspace {workspace_hash}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Error closing DB connection for {workspace_hash}: {e}")
             
             # Clean up state
             self.last_data_hash.pop(workspace_hash, None)
