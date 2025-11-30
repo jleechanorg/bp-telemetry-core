@@ -66,9 +66,12 @@ export async function activate(context: vscode.ExtensionContext) {
       return;
     }
 
-    // Start new session
+    // Start new session (only if workspace is available)
     try {
-      sessionManager.startNewSession();
+      const session = sessionManager.startNewSession();
+      if (!session) {
+        console.log("Session not started - workspace not available yet");
+      }
     } catch (error) {
       console.error("Failed to start session:", error);
       // Continue anyway - session is not critical
@@ -121,12 +124,21 @@ export async function activate(context: vscode.ExtensionContext) {
 
       // Handle workspace changes
       context.subscriptions.push(
-        vscode.workspace.onDidChangeWorkspaceFolders(() => {
+        vscode.workspace.onDidChangeWorkspaceFolders((event) => {
           try {
             if (sessionManager) {
-              // Start new session for new workspace
-              sessionManager.stopSession();
-              sessionManager.startNewSession();
+              // Stop existing session if workspace was removed
+              if (event.removed.length > 0) {
+                sessionManager.stopSession();
+              }
+
+              // Start new session if workspace was added
+              if (event.added.length > 0) {
+                const session = sessionManager.startNewSession();
+                if (session) {
+                  console.log(`Started session for new workspace: ${session.sessionId}`);
+                }
+              }
             }
           } catch (error) {
             console.error("Error handling workspace change:", error);
