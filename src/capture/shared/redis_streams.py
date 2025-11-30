@@ -13,12 +13,12 @@ This avoids hardcoded string values and confusion about stream naming.
 # TELEMETRY STREAMS
 # =============================================================================
 
-# Main event stream for all telemetry events from hooks/monitors
-# Used by: hooks, monitors → event consumers
+# Legacy event stream (currently unused by producers)
+# Consumers that previously read from this stream should use message_queue instead
 TELEMETRY_EVENTS_STREAM = "telemetry:events"
 
-# Message queue for asynchronous event processing
-# Used by: JSONL monitor, transcript monitor → event processors
+# Primary event stream for all telemetry events
+# Used by: HTTP hooks, JSONL monitor, database monitors → event consumers
 TELEMETRY_MESSAGE_QUEUE_STREAM = "telemetry:message_queue"
 
 # Dead Letter Queue for failed messages
