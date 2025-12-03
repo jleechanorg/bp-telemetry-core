@@ -38,6 +38,44 @@ If Git unavailable or merge-base fails.
 
 For full schema details, see the **Data Access / Schema Reference** section in `telemetry-insights/SKILL.md`. This skill uses the same combined Cursor + Claude access patterns, but scoped to the PR branch window.
 
+### Tool Usage & Workflow Patterns (Claude Code only)
+
+**Data source**: Decompress `event_data` blob from `claude_raw_traces`
+
+```python
+import zlib, json
+decompressed = zlib.decompress(row['event_data'])
+event = json.loads(decompressed)
+tools = event['payload']['entry_data']['message']['content']
+# Filter: item['type'] == 'tool_use'
+# Extract: item['name'], item['input']['file_path'], item['input']['command']
+```
+
+**Tool operation churn** (detect both productive and unproductive patterns):
+
+**Negative patterns** (wasted effort):
+- Files written then deleted without commit (e.g., created but not in git)
+- Same file edited multiple times in short succession (trial-and-error)
+- Bash commands repeated with similar patterns (debugging loops)
+- Write operations for files later removed (unwanted artifacts)
+
+**Positive patterns** (intentional iteration):
+- Progressive refinement: Write → Read → Edit (deliberate improvement)
+- Test-driven flow: Write test → Run → Edit code → Run (TDD cycle)
+- Exploration: Multiple Read/Grep before Write (research-based development)
+- Read-before-edit ratio > 0.8 (careful, informed changes)
+
+**Workflow efficiency signals**:
+- Tool distribution (Bash, Write, Edit, Read, Task usage)
+- Read-before-edit ratio (higher = more careful)
+- File touch count (edits per unique file path)
+- Time between tool uses (rapid = reactive, spaced = deliberate)
+
+Cross-reference with git to classify churn:
+- Compare Write/Edit file paths against final committed files
+- Flag operations on files not in `git diff --name-only`
+- Distinguish exploration (positive) from mistakes (negative)
+
 ---
 
 ## Metrics (Lean Subset)
@@ -71,6 +109,19 @@ For full schema details, see the **Data Access / Schema Reference** section in `
   },
   "daily": {
     "YYYY-MM-DD": {"input": N, "output": N, "prompts": N}
+  },
+  "tool_usage": {
+    "note": "Claude Code only - extracted from event_data blob",
+    "distribution": {"Bash": N, "Write": N, "Edit": N, "Read": N},
+    "workflow_signals": {
+      "read_before_edit_ratio": X.XX,
+      "files_created_not_committed": N,
+      "high_churn_files": ["path/to/file"]
+    },
+    "pattern_classification": {
+      "productive_iteration": N,
+      "trial_and_error": N
+    }
   }
 }
 ```
@@ -83,6 +134,7 @@ For full schema details, see the **Data Access / Schema Reference** section in `
 - **Activity Pattern**: steady/bursty/spiky, platform distribution
 - **Model Strategy**: dominant model, cost awareness (Claude Code only)
 - **Platform Usage**: Claude Code vs Cursor breakdown, workflow insights
+- **Workflow Quality**: Tool usage patterns, churn classification (productive vs wasteful), read-before-edit discipline
 
 ---
 
@@ -110,6 +162,12 @@ Then: activity level, efficiency, standout patterns.
 **Models** (Claude Code only)
 - Model distribution
 - Strategic usage patterns
+
+**Tool Usage & Workflow** (Claude Code only, optional)
+- Tool operation distribution
+- Files created but not committed (potential waste)
+- Workflow patterns (productive iteration vs trial-and-error)
+- Read-before-edit ratio
 
 ### Recommendations (3-5 bullets)
 

@@ -41,6 +41,46 @@ description: Analyze AI coding session telemetry for usage patterns, token effic
 - Message type: `message_type` (0=user, 1=assistant, but NULL for ~all events - use heuristics)
 - Model: ❌ Not stored in database
 
+### Tool Usage Analysis (Claude Code only)
+
+**Data source**: Decompress `event_data` blob from `claude_raw_traces`
+
+```python
+import zlib, json
+decompressed = zlib.decompress(row['event_data'])
+event = json.loads(decompressed)
+tools = event['payload']['entry_data']['message']['content']
+# Filter: item['type'] == 'tool_use'
+# Extract: item['name'], item['input']['file_path'], item['input']['command']
+```
+
+**Tool operation churn** (detect both productive and unproductive patterns):
+
+**Negative patterns** (wasted effort):
+- Files written then deleted without commit
+- Same file edited multiple times in short succession (trial-and-error)
+- Bash commands repeated with similar patterns (debugging loops)
+- Write operations for files later removed (unwanted artifacts)
+
+**Positive patterns** (intentional iteration):
+- Progressive refinement: Write → Read → Edit (deliberate improvement)
+- Test-driven flow: Write test → Run → Edit code → Run (TDD cycle)
+- Exploration: Multiple Read/Grep before Write (research-based development)
+- Read-before-edit ratio > 0.8 (careful, informed changes)
+
+**Workflow efficiency signals**:
+- Tool distribution (Bash, Write, Edit, Read, Task usage)
+- Read-before-edit ratio (higher = more careful)
+- File touch count (edits per unique file path)
+- Time between tool uses (rapid = reactive, spaced = deliberate)
+
+Cross-reference with git to classify churn:
+- Compare Write/Edit file paths against final committed files
+- Flag operations on files not in `git diff --name-only`
+- Distinguish exploration (positive) from mistakes (negative)
+
+---
+
 ## Raw Metrics
 
 ### A. Flow & Structure
@@ -71,6 +111,14 @@ description: Analyze AI coding session telemetry for usage patterns, token effic
 ### H. Temporal Productivity
 - `tokens_per_day`, `tokens_per_hour_utc`, `prompts_per_minute_by_session`
 
+### I. Tool Usage & Workflow Patterns (Claude Code only)
+- `tool_distribution`: counts by tool name (Bash, Write, Edit, Read, etc.)
+- `read_before_edit_ratio`: Read operations / Edit operations
+- `files_created_not_committed`: count of Write file_paths not in git
+- `file_touch_count`: edits per unique file_path
+- `high_churn_files`: files edited 3+ times
+- `pattern_classification`: productive_iteration vs trial_and_error counts
+
 ---
 
 ## Derived Insights
@@ -90,15 +138,17 @@ description: Analyze AI coding session telemetry for usage patterns, token effic
 13. **Model_Strategy_Assessment**: single_model/tiered_models, cost_awareness
 14. **Peak_Performance_Windows**: top hours UTC
 15. **Session_Focus_Profile**: short_bursts/long_deep_work/mixed
+16. **Workflow_Quality_Score** (0-1): based on read-before-edit ratio, productive vs wasteful churn
+17. **Development_Discipline**: careful (high read-first) vs reactive (low read-first, high trial-and-error)
 
 ---
 
 ## Output Format
 
 ```
-1. RAW_METRICS: { JSON with metrics A-H above }
+1. RAW_METRICS: { JSON with metrics A-I above }
 
-2. DERIVED_INSIGHTS: { JSON with insights 1-15 above }
+2. DERIVED_INSIGHTS: { JSON with insights 1-17 above }
 
 3. SESSION_SUMMARY: 6-10 sentences covering:
    - Analysis scope (first sentence)
