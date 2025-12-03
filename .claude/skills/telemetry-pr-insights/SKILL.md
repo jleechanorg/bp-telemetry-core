@@ -29,10 +29,11 @@ If Git unavailable or merge-base fails.
   - Model: `message_model`, Role: `message_role`, Branch: `git_branch`
 
 - **Cursor** (`cursor_sessions` + `cursor_raw_traces`):
-  - Get `composer_id`s from `cursor_sessions` for the workspace (`workspace_path LIKE '/path/to/workspace%'`)
-  - Bubbles: filter by composer_id extracted from `item_key = "bubbleId:{composerId}:{bubbleId}"`
+  - Step 1: Get `workspace_hash` from `cursor_sessions WHERE workspace_path LIKE '/path/to/workspace%'`
+  - Step 2: Get `composer_id`s from `cursor_raw_traces WHERE event_type='composer' AND workspace_hash=?`
+  - Step 3: Filter bubbles by composer_id extracted from `item_key = "bubbleId:{composerId}:{bubbleId}"`
   - Tokens: `token_count_up_until_here` (cumulative only; use for activity, not precise totals)
-  - Message type: `message_type` (often NULL; use heuristics)
+  - Message type: `message_type` (0=user, 1=assistant, often NULL for ~all events)
   - Model: **not stored** (always treated as unknown)
 
 For full schema details, see the **Data Access / Schema Reference** section in `telemetry-insights/SKILL.md`. This skill uses the same combined Cursor + Claude access patterns, but scoped to the PR branch window.

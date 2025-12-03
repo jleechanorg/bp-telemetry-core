@@ -32,13 +32,13 @@ description: Analyze AI coding session telemetry for usage patterns, token effic
 - Branch field: `git_branch`
 
 **Cursor** (`cursor_sessions` + `cursor_raw_traces` tables):
-- Session lookup: `SELECT id, workspace_hash FROM cursor_sessions WHERE workspace_path LIKE '/path/to/workspace%'`
-  - `cursor_sessions.id` IS the `composer_id` (same value)
-- Bubble filtering: Extract composer_id from `item_key`: `"bubbleId:{composerId}:{bubbleId}"`
+- **Step 1**: Get `workspace_hash` from `cursor_sessions WHERE workspace_path LIKE '/path/to/workspace%'`
+- **Step 2**: Get `composer_id`s from `cursor_raw_traces WHERE event_type='composer' AND workspace_hash=?`
+- **Step 3**: Filter bubbles by extracting composer_id from `item_key`: `"bubbleId:{composerId}:{bubbleId}"`
   - Bubbles have empty `workspace_hash` in global storage
-  - Must join via composer_id extracted from item_key
+  - Must join via composer_id from Step 2
 - Token field: `token_count_up_until_here` (cumulative context, NOT per-message tokens)
-- Message type: `message_type` (0=user, 1=assistant, often NULL - use heuristics)
+- Message type: `message_type` (0=user, 1=assistant, but NULL for ~all events - use heuristics)
 - Model: ❌ Not stored in database
 
 ## Raw Metrics
