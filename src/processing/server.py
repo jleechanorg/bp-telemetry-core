@@ -771,12 +771,60 @@ class TelemetryServer:
 
 
 def setup_logging(level: str = "INFO") -> None:
-    """Setup logging configuration."""
-    logging.basicConfig(
-        level=getattr(logging, level.upper()),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    """
+    Setup logging configuration with file rotation.
+
+    Logs to both console (stdout) and rotating file (~/.blueplane/server.log).
+    File rotation prevents unbounded disk usage.
+    """
+    from logging.handlers import RotatingFileHandler
+
+    # Load config for rotation settings
+    try:
+        config = Config()
+        max_bytes = config.get("logging.rotation.max_bytes", 10485760)  # 10 MB default
+        backup_count = config.get("logging.rotation.backup_count", 5)  # 5 backups default
+    except Exception:
+        # Fallback to defaults if config load fails
+        max_bytes = 10485760  # 10 MB
+        backup_count = 5
+
+    # Ensure log directory exists
+    log_dir = Path.home() / ".blueplane"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "server.log"
+
+    # Create formatters
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+
+    # Get root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, level.upper()))
+
+    # Remove any existing handlers
+    root_logger.handlers.clear()
+
+    # Console handler (stdout)
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(getattr(logging, level.upper()))
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+    # Rotating file handler
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+        encoding='utf-8'
+    )
+    file_handler.setLevel(getattr(logging, level.upper()))
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+
+    logger.info(f"Logging initialized: level={level}, file={log_file}, max_size={max_bytes/1024/1024:.1f}MB, backups={backup_count}")
 
 
 def main() -> None:
