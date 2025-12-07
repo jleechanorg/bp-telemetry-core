@@ -89,6 +89,8 @@ python scripts/server_ctl.py start --daemon
 # python scripts/server_ctl.py status --verbose  # Check server status
 # python scripts/server_ctl.py stop             # Graceful shutdown
 # python scripts/server_ctl.py restart --daemon # Restart server
+# python scripts/server_ctl.py logs -f          # Stream logs in real-time
+# python scripts/server_ctl.py logs -n 100      # View last 100 lines
 
 # 9. Verify installation
 # Check extension is active in Cursor: Extensions → Blueplane Telemetry
@@ -141,9 +143,11 @@ python scripts/install_claude_hooks_http.py
 python scripts/server_ctl.py start --daemon
 
 # Server management:
-# python scripts/server_ctl.py status   # Check status
-# python scripts/server_ctl.py stop     # Stop server
-# tail -f ~/.blueplane/server.log       # View logs
+# python scripts/server_ctl.py status --verbose  # Check status
+# python scripts/server_ctl.py stop              # Stop server
+# python scripts/server_ctl.py logs -f           # Stream logs in real-time
+# python scripts/server_ctl.py logs -n 100       # View last 100 lines
+# tail -f ~/.blueplane/server.log                # Alternative: direct log file access
 
 # 8. Verify installation
 # Check hooks are installed
@@ -152,7 +156,12 @@ ls -la ~/.claude/hooks/telemetry/
 # Check server is running
 python scripts/server_ctl.py status --verbose
 
-# View server logs
+# View server logs (using server_ctl - recommended)
+python scripts/server_ctl.py logs -f  # Stream logs in real-time
+python scripts/server_ctl.py logs -n 50  # View last 50 lines
+python scripts/server_ctl.py logs --all-files  # Include rotated log backups
+
+# Alternative: Direct log file access
 tail -f ~/.blueplane/server.log
 
 # Check Redis queue
@@ -170,7 +179,12 @@ After installation, the hooks will capture events automatically as you work in C
 # Check hooks are configured in settings
 cat ~/.claude/settings.json | grep -A 5 "hooks"
 
-# View server logs
+# View server logs (using server_ctl - recommended)
+python scripts/server_ctl.py logs -f  # Stream logs in real-time
+python scripts/server_ctl.py logs -n 50  # View last 50 lines
+python scripts/server_ctl.py logs --all-files  # Include rotated log backups
+
+# Alternative: Direct log file access
 tail -f ~/.blueplane/server.log
 
 # Check Redis queue
