@@ -156,7 +156,12 @@ ls -la ~/.claude/hooks/telemetry/
 # Check server is running
 python scripts/server_ctl.py status --verbose
 
-# View server logs
+# View server logs (using server_ctl - recommended)
+python scripts/server_ctl.py logs -f  # Stream logs in real-time
+python scripts/server_ctl.py logs -n 50  # View last 50 lines
+python scripts/server_ctl.py logs --all-files  # Include rotated log backups
+
+# Alternative: Direct log file access
 tail -f ~/.blueplane/server.log
 
 # Check Redis queue
@@ -174,7 +179,12 @@ After installation, the hooks will capture events automatically as you work in C
 # Check hooks are configured in settings
 cat ~/.claude/settings.json | grep -A 5 "hooks"
 
-# View server logs
+# View server logs (using server_ctl - recommended)
+python scripts/server_ctl.py logs -f  # Stream logs in real-time
+python scripts/server_ctl.py logs -n 50  # View last 50 lines
+python scripts/server_ctl.py logs --all-files  # Include rotated log backups
+
+# Alternative: Direct log file access
 tail -f ~/.blueplane/server.log
 
 # Check Redis queue

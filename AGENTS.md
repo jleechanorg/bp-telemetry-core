@@ -284,10 +284,13 @@ python scripts/install_claude_hooks.py           # Install Redis hooks (deprecat
 python scripts/uninstall_claude_hooks.py         # Uninstall Redis hooks
 
 # Server management (Layer 2) - RECOMMENDED
-python scripts/server_ctl.py start --daemon  # Start in background
-python scripts/server_ctl.py stop            # Graceful shutdown
+python scripts/server_ctl.py start --daemon   # Start in background
+python scripts/server_ctl.py stop             # Graceful shutdown
 python scripts/server_ctl.py restart --daemon # Restart in background
 python scripts/server_ctl.py status --verbose # Detailed status
+python scripts/server_ctl.py logs -f          # Stream logs in real-time (seamless rotation handling)
+python scripts/server_ctl.py logs -n 100      # View last 100 lines
+python scripts/server_ctl.py logs --all-files # Include rotated log backups
 
 # Alternative: Direct server start (use server_ctl.py instead)
 python -m src.processing.server  # Foreground only, no PID management
@@ -507,6 +510,11 @@ const pollInterval = config.monitoring.cursor_database.poll_interval;
 ## Debugging Tips
 
 ```bash
+# Server logs (RECOMMENDED - seamless rotation handling)
+python scripts/server_ctl.py logs -f          # Stream logs in real-time
+python scripts/server_ctl.py logs -n 100      # View last 100 lines
+python scripts/server_ctl.py logs --all-files # Include rotated backups
+
 # Check message queue status
 redis-cli XINFO STREAM telemetry:message_queue
 
